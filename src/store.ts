@@ -10,6 +10,8 @@ export interface SongsFolder {
 export interface Folders {
   install: FileSystemDirectoryHandle | null;
   extra: SongsFolder[];
+  /** Etterna's Preferences.ini chosen by hand, when the one in Save could not be read. */
+  prefsFile?: FileSystemFileHandle;
 }
 
 const DB = 'etterna-offset-helper';

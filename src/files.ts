@@ -3,6 +3,11 @@
 declare global {
   interface Window {
     showDirectoryPicker?: (opts?: { mode?: 'read' | 'readwrite'; id?: string }) => Promise<FileSystemDirectoryHandle>;
+    showOpenFilePicker?: (opts?: {
+      id?: string;
+      startIn?: FileSystemHandle;
+      types?: { description: string; accept: Record<string, string[]> }[];
+    }) => Promise<FileSystemFileHandle[]>;
   }
   interface FileSystemHandle {
     queryPermission?: (opts: { mode: 'read' | 'readwrite' }) => Promise<PermissionState>;
@@ -11,6 +16,21 @@ declare global {
 }
 
 const AUDIO_EXTS = ['.ogg', '.mp3', '.wav', '.flac', '.oga', '.opus', '.m4a', '.aac'];
+
+/** A file or folder in a folder by name, ignoring case; null when there is none. */
+export async function findChild<K extends 'file' | 'directory'>(
+  dir: FileSystemDirectoryHandle,
+  name: string,
+  kind: K,
+): Promise<(K extends 'file' ? FileSystemFileHandle : FileSystemDirectoryHandle) | null> {
+  type Out = K extends 'file' ? FileSystemFileHandle : FileSystemDirectoryHandle;
+  try {
+    return (kind === 'file' ? await dir.getFileHandle(name) : await dir.getDirectoryHandle(name)) as Out;
+  } catch {
+    for await (const [n, h] of dir.entries()) if (h.kind === kind && n.toLowerCase() === name.toLowerCase()) return h as Out;
+    return null;
+  }
+}
 
 /** A file by a simfile's path to it (case-insensitive, sub-folders allowed), or null. */
 export async function findFile(dir: FileSystemDirectoryHandle, path: string): Promise<File | null> {

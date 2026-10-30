@@ -5,7 +5,7 @@
 
 import './style.css';
 import { h } from './dom';
-import { findFile, firstAudio } from './files';
+import { findChild, findFile, firstAudio } from './files';
 import { loadSimfile } from './model/simfileIO';
 import { findSong, parseNowPlaying, type NowPlaying, type SongFolder } from './nowPlaying';
 import { additionalSongFolders, readOffset, withOffset } from './offsetFile';
@@ -53,9 +53,9 @@ async function hasChild(dir: FileSystemDirectoryHandle, name: string): Promise<b
 
 class Helper {
   folders: Folders = { install: null, extra: [] };
-  /** Extra song folders listed in Etterna's Preferences.ini, and whether that file was found. */
+  /** Extra song folders listed in Etterna's Preferences.ini, and why it could not be read. */
   wanted: string[] = [];
-  prefsFound = true;
+  prefsError: string | null = null;
   /** Whether the browser lets the page read and write the folders right now. */
   granted = false;
   watch: 'idle' | 'ok' | 'missing' | 'denied' = 'idle';
@@ -91,12 +91,14 @@ class Helper {
     return [this.folders.install, ...this.folders.extra.map((f) => f.handle)].filter((d): d is FileSystemDirectoryHandle => d !== null);
   }
 
-  /** Checks (or, after a click, asks for) read and write access to every folder. */
+  /** Checks (or, after a click, asks for) read and write access to every folder (and reading a chosen Preferences.ini). */
   private async permitted(ask: boolean): Promise<boolean> {
-    for (const d of this.handles()) {
+    const wants: [FileSystemHandle, 'read' | 'readwrite'][] = this.handles().map((d) => [d, 'readwrite']);
+    if (this.folders.prefsFile) wants.push([this.folders.prefsFile, 'read']);
+    for (const [d, mode] of wants) {
       if (!d.queryPermission || !d.requestPermission) continue;
-      let state = await d.queryPermission({ mode: 'readwrite' });
-      if (state !== 'granted' && ask) state = await d.requestPermission({ mode: 'readwrite' });
+      let state = await d.queryPermission({ mode });
+      if (state !== 'granted' && ask) state = await d.requestPermission({ mode });
       if (state !== 'granted') return false;
     }
     return true;
@@ -104,16 +106,41 @@ class Helper {
 
   /** With access granted: read the extra song folders Etterna uses, and start watching. */
   private async connected(): Promise<void> {
-    const install = this.folders.install!;
+    await this.readPrefs();
+    this.worker.postMessage({ dir: this.folders.install! });
+  }
+
+  /**
+   * Etterna's extra song folders, from Save/Preferences.ini in its folder (or the file chosen by
+   * hand). On failure the reason is kept to show, and it is tried again with the next song.
+   */
+  private async readPrefs(): Promise<void> {
     try {
-      const ini = await (await (await install.getDirectoryHandle('Save')).getFileHandle('Preferences.ini')).getFile();
-      this.wanted = additionalSongFolders(await ini.text());
-      this.prefsFound = true;
-    } catch {
-      this.wanted = [];
-      this.prefsFound = false;
+      let file = this.folders.prefsFile ?? null;
+      if (!file) {
+        const save = await findChild(this.folders.install!, 'Save', 'directory');
+        if (!save) throw new Error('there is no Save folder in it');
+        file = await findChild(save, 'Preferences.ini', 'file');
+        if (!file) throw new Error('its Save folder has no Preferences.ini');
+      }
+      this.wanted = additionalSongFolders(await (await file.getFile()).text());
+      this.prefsError = null;
+    } catch (e) {
+      this.prefsError = e instanceof DOMException ? `${e.name}: ${e.message}` : (e as Error).message;
     }
-    this.worker.postMessage({ dir: install });
+  }
+
+  async choosePrefs(): Promise<void> {
+    let file: FileSystemFileHandle;
+    try {
+      [file] = await window.showOpenFilePicker!({ id: 'etterna-prefs', startIn: this.folders.install ?? undefined, types: [{ description: 'Etterna preferences', accept: { 'text/plain': ['.ini'] } }] });
+    } catch {
+      return; // cancelled
+    }
+    this.folders.prefsFile = file;
+    await saveFolders(this.folders);
+    await this.readPrefs();
+    this.render();
   }
 
   async chooseInstall(): Promise<void> {
@@ -191,6 +218,7 @@ class Helper {
     this.song = song;
     this.render();
     const stale = () => run !== this.run;
+    if (this.prefsError) await this.readPrefs();
     try {
       const found = await findSong(np, await this.songRoots());
       if (stale()) return;
@@ -344,8 +372,13 @@ class Helper {
       f.install && this.granted && missing.length
         ? h('p', { class: 'hint' }, 'Etterna also loads songs from the folders above (listed in its Save/Preferences.ini). Web pages cannot open a folder by its path, so add each one once.')
         : null,
-      f.install && this.granted && !this.prefsFound
-        ? h('p', { class: 'warn' }, `“${f.install.name}” has no Save/Preferences.ini, so Etterna’s extra song folders (AdditionalSongFolders) cannot be listed. Is it the folder Etterna.exe is in? Otherwise add them with “Add another songs folder…”.`)
+      f.install && this.granted && this.prefsError
+        ? h(
+            'div',
+            { class: 'prefs-problem' },
+            h('p', { class: 'warn' }, `Could not read Save/Preferences.ini in “${f.install.name}” (${this.prefsError}), so Etterna’s extra song folders (AdditionalSongFolders) are not listed. Choose the file by hand, or add the folders with “Add another songs folder…”.`),
+            window.showOpenFilePicker ? h('button', { type: 'button', onclick: () => void this.choosePrefs() }, 'Choose Preferences.ini…') : null,
+          )
         : null,
       h(
         'div',
@@ -426,7 +459,7 @@ class Helper {
       drift && sure ? h('p', { class: 'warn' }, 'The sync wanders along the song, so one offset cannot fix all of it: the BPMs may need fixing (Fix offset + BPMs in Better Arrow Vortex’s Adjust sync).') : null,
       s.splitTiming ? h('p', { class: 'warn' }, 'Some charts have their own timing. Their offsets move only where they equal the song’s.') : null,
       h('canvas', { class: 'map', title: 'The sync map: the music’s attacks around each beat along the song (up is later). Blue: the chart’s beats now. Cyan: measured. Dashed: where each choice puts the beats.' }),
-      h('p', { class: 'legend' }, `Up to ${WIDE_MS} ms either side of the beats along the song, up is later. Blue: the chart’s beats now; cyan: measured; dashed: ${sure ? 'where the fix puts them' : 'the choices'}.`),
+      h('p', { class: 'legend' }, `Up to ${mapRange(rec)} ms either side of the beats along the song, up is later. Blue: the chart’s beats now; cyan: measured; dashed: ${sure ? 'where the fix puts them' : 'the choices'}.`),
       sure ? h('div', { class: 'actions' }, applyButton(best, 'Apply offset', !inSync), a ? h('button', { type: 'button', class: 'quiet', disabled: s.busy, onclick: () => void this.undo() }, 'Undo') : null) : null,
       !sure && a ? h('div', { class: 'actions' }, h('button', { type: 'button', class: 'quiet', disabled: s.busy, onclick: () => void this.undo() }, 'Undo')) : null,
       a
@@ -445,9 +478,15 @@ class Helper {
   }
 }
 
+/** How far the map reaches (ms): the editor's ±60 when the answer is sure and close, ±WIDE_MS when there are choices to show. */
+function mapRange(rec: Recommendation): number {
+  return rec.choices.length === 1 && Math.abs(rec.choices[0].shiftMs) <= 45 ? 60 : WIDE_MS;
+}
+
 /**
- * The sync map, as in Better Arrow Vortex's Adjust sync: one pixel column per slice of the song,
- * bright where the music's attacks are around the chart's beats (top +WIDE_MS ms, later).
+ * The sync map, drawn as Better Arrow Vortex's Adjust sync draws it: one pixel column per slice
+ * of the song (the beats in it averaged, or else the last beat before it), bright where the
+ * music's attacks are around the chart's beats, later at the top.
  */
 function drawMap(canvas: HTMLCanvasElement, rec: Recommendation): void {
   const dpr = window.devicePixelRatio || 1;
@@ -460,29 +499,24 @@ function drawMap(canvas: HTMLCanvasElement, rec: Recommendation): void {
   const ctx = canvas.getContext('2d')!;
   const pixels = ctx.createImageData(pw, ph);
   const px = pixels.data;
+  const range = mapRange(rec);
   const rowOf = new Int32Array(ph);
-  for (let y = 0; y < ph; ++y) rowOf[y] = Math.round((WIDE_ROWS - 1) * (1 - (y + 0.5) / ph));
+  for (let y = 0; y < ph; ++y) rowOf[y] = WIDE_MS - range + Math.round(2 * range * (1 - (y + 0.5) / ph));
   const column = new Float32Array(WIDE_ROWS);
-  const nBeats = rec.beats.length;
   let b = 0;
   for (let x = 0; x < pw; ++x) {
-    const t0 = (x / pw) * rec.duration;
     const t1 = ((x + 1) / pw) * rec.duration;
-    // The beats in this slice, widened to at least 8 (the stretch the measurement uses) so a
-    // single quiet beat does not show as noise.
-    while (b < nBeats && rec.beats[b] < t0) ++b;
-    let end = b;
-    while (end < nBeats && rec.beats[end] < t1) ++end;
-    let lo = b;
-    let hi = end;
-    while (hi - lo < 8 && (lo > 0 || hi < nBeats)) {
-      if (lo > 0) --lo;
-      if (hi - lo < 8 && hi < nBeats) ++hi;
-    }
-    const near = lo < nBeats && (hi > b || (b > 0 && t0 - rec.beats[b - 1] < 2));
     column.fill(0);
-    const n = near ? hi - lo : 0;
-    for (let j = lo; j < hi && near; ++j) for (let k = 0; k < WIDE_ROWS; ++k) column[k] += rec.columns[j * WIDE_ROWS + k];
+    let n = 0;
+    while (b < rec.beats.length && rec.beats[b] < t1) {
+      for (let k = 0; k < WIDE_ROWS; ++k) column[k] += rec.columns[b * WIDE_ROWS + k];
+      ++n;
+      ++b;
+    }
+    if (!n && b > 0 && t1 - rec.beats[b - 1] < 2) {
+      for (let k = 0; k < WIDE_ROWS; ++k) column[k] = rec.columns[(b - 1) * WIDE_ROWS + k];
+      n = 1;
+    }
     for (let y = 0; y < ph; ++y) {
       const v = n ? column[rowOf[y]] / n : 0;
       const g = Math.round(18 + 237 * v * v);
@@ -494,11 +528,12 @@ function drawMap(canvas: HTMLCanvasElement, rec: Recommendation): void {
   ctx.putImageData(pixels, 0, 0);
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   const xOf = (t: number) => (t / rec.duration) * w;
-  const yOf = (v: number) => hgt / 2 - (v / WIDE_MS) * (hgt / 2);
+  const yOf = (v: number) => hgt / 2 - (v / range) * (hgt / 2);
 
+  // Reference lines, as in the editor: ±10 / ±30 ms (±25 / ±50 / ±75 on the wider map).
   ctx.font = '9px system-ui, sans-serif';
   ctx.textBaseline = 'middle';
-  for (const v of [-75, -50, -25, 25, 50, 75]) {
+  for (const v of range === 60 ? [-30, -10, 10, 30] : [-75, -50, -25, 25, 50, 75]) {
     ctx.fillStyle = 'rgba(255,255,255,0.10)';
     ctx.fillRect(0, Math.round(yOf(v)), w, 1);
     ctx.fillStyle = 'rgba(255,255,255,0.45)';
