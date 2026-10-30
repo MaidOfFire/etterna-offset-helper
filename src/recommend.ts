@@ -158,8 +158,13 @@ export function recommendFromCurve(timing: TimingData, curve: OnsetCurve, durati
   return { current: timing.offset, choices, points, beats, columns, duration };
 }
 
-export async function recommendOffset(timing: TimingData, music: ArrayBuffer): Promise<Recommendation | { error: string }> {
+/** The music's onset curve on the games' timeline, kept so the song can be measured again against another offset. */
+export interface MusicAnalysis {
+  curve: OnsetCurve;
+  duration: number;
+}
+
+export async function analyzeMusic(music: ArrayBuffer): Promise<MusicAnalysis> {
   const buffer = await decodeForGames(new OfflineAudioContext(1, 1, 44100), music);
-  const curve = await sharpOnsetsOf(buffer);
-  return recommendFromCurve(timing, curve, buffer.duration);
+  return { curve: await sharpOnsetsOf(buffer), duration: buffer.duration };
 }

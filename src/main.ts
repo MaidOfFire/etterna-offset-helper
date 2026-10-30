@@ -9,7 +9,8 @@ import { findChild, findFile, firstAudio } from './files';
 import { loadSimfile } from './model/simfileIO';
 import { findSong, parseNowPlaying, type NowPlaying, type SongFolder } from './nowPlaying';
 import { additionalSongFolders, readOffset, withOffset } from './offsetFile';
-import { WIDE_MS, WIDE_ROWS, recommendOffset, type Choice, type Recommendation } from './recommend';
+import type { TimingData } from './model/types';
+import { WIDE_MS, WIDE_ROWS, analyzeMusic, recommendFromCurve, type Choice, type MusicAnalysis, type Recommendation } from './recommend';
 import { loadFolders, saveFolders, type Folders } from './store';
 
 /** Below this the chart counts as in sync (ms). */
@@ -27,6 +28,11 @@ interface SongState {
   artist?: string;
   splitTiming?: boolean;
   rec?: Recommendation;
+  /** The song's timing as read and its music, to measure again against an applied offset. */
+  timing?: TimingData;
+  music?: MusicAnalysis;
+  /** The sync with the applied offset, which the map then shows (centred when the fix was right). */
+  after?: Recommendation;
   applied?: { offset: number; files: string[]; skipped: string[]; kept: number; undo: { name: string; bytes: Uint8Array }[] };
   restored?: boolean;
   busy?: boolean;
@@ -234,10 +240,11 @@ class Helper {
       Object.assign(song, { title: sim.meta.TITLE, artist: sim.meta.ARTIST, splitTiming: sim.charts.some((c) => c.timing) });
       const music = (sim.meta.MUSIC ? await findFile(folder.dir, sim.meta.MUSIC) : null) ?? (await firstAudio(folder.dir));
       if (!music) return this.fail(song, `The music file “${sim.meta.MUSIC}” is not in the song folder.`);
-      const rec = await recommendOffset(sim.timing, await music.arrayBuffer());
+      const analysis = await analyzeMusic(await music.arrayBuffer());
       if (stale()) return;
+      const rec = recommendFromCurve(sim.timing, analysis.curve, analysis.duration);
       if ('error' in rec) return this.fail(song, rec.error);
-      Object.assign(song, { rec, status: 'ready' });
+      Object.assign(song, { rec, timing: sim.timing, music: analysis, status: 'ready' });
     } catch (e) {
       if (!stale()) return this.fail(song, (e as Error).message);
     }
@@ -273,6 +280,11 @@ class Helper {
       }
       s.applied = applied;
       s.restored = false;
+      // Measured again with the new offset, so the map shows the music around the new beats.
+      if (applied.files.length && s.timing && s.music) {
+        const after = recommendFromCurve({ ...s.timing, offset: choice.offset }, s.music.curve, s.music.duration);
+        s.after = 'error' in after ? undefined : after;
+      }
     } catch (e) {
       this.message = `Could not save: ${(e as Error).message}`;
     }
@@ -287,6 +299,7 @@ class Helper {
     try {
       for (const u of s.applied.undo) await writeBytes(s.folder.dir, u.name, u.bytes);
       s.applied = undefined;
+      s.after = undefined;
       s.restored = true;
     } catch (e) {
       this.message = `Could not restore: ${(e as Error).message}`;
@@ -321,7 +334,7 @@ class Helper {
     ];
     this.root.replaceChildren(...parts.filter((p): p is HTMLElement => p !== null));
     const canvas = this.root.querySelector<HTMLCanvasElement>('canvas.map');
-    if (canvas && rec) drawMap(canvas, rec);
+    if (canvas && rec) drawMap(canvas, s?.after ?? rec);
   }
 
   private watchLine(): HTMLElement {
@@ -459,7 +472,9 @@ class Helper {
       drift && sure ? h('p', { class: 'warn' }, 'The sync wanders along the song, so one offset cannot fix all of it: the BPMs may need fixing (Fix offset + BPMs in Better Arrow Vortex’s Adjust sync).') : null,
       s.splitTiming ? h('p', { class: 'warn' }, 'Some charts have their own timing. Their offsets move only where they equal the song’s.') : null,
       h('canvas', { class: 'map', title: 'The sync map: the music’s attacks around each beat along the song (up is later). Blue: the chart’s beats now. Cyan: measured. Dashed: where each choice puts the beats.' }),
-      h('p', { class: 'legend' }, `Up to ${mapRange(rec)} ms either side of the beats along the song, up is later. Blue: the chart’s beats now; cyan: measured; dashed: ${sure ? 'where the fix puts them' : 'the choices'}.`),
+      s.after
+        ? h('p', { class: 'legend' }, `With the applied offset ${seconds(a!.offset)}: up to ${mapRange(s.after)} ms either side of the new beats, up is later. Blue: the new beats; cyan: measured${s.after.choices.length > 1 ? '; dashed: other places the beat could be' : ''}.`)
+        : h('p', { class: 'legend' }, `Up to ${mapRange(rec)} ms either side of the beats along the song, up is later. Blue: the chart’s beats now; cyan: measured; dashed: ${sure ? 'where the fix puts them' : 'the choices'}.`),
       sure ? h('div', { class: 'actions' }, applyButton(best, 'Apply offset', !inSync), a ? h('button', { type: 'button', class: 'quiet', disabled: s.busy, onclick: () => void this.undo() }, 'Undo') : null) : null,
       !sure && a ? h('div', { class: 'actions' }, h('button', { type: 'button', class: 'quiet', disabled: s.busy, onclick: () => void this.undo() }, 'Undo')) : null,
       a
