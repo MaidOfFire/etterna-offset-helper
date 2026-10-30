@@ -9,13 +9,13 @@ import { findFile, firstAudio } from './files';
 import { loadSimfile } from './model/simfileIO';
 import { findSong, parseNowPlaying, type NowPlaying, type SongFolder } from './nowPlaying';
 import { additionalSongFolders, readOffset, withOffset } from './offsetFile';
-import { recommendOffset, type Recommendation } from './recommend';
+import { WIDE_MS, WIDE_ROWS, recommendOffset, type Choice, type Recommendation } from './recommend';
 import { loadFolders, saveFolders, type Folders } from './store';
 
 /** Below this the chart counts as in sync (ms). */
 const IN_SYNC_MS = 2;
 /** A spread wider than this after the fix means the BPMs drift, which the offset cannot fix (ms). */
-const WIDE_MS = 10;
+const DRIFT_MS = 10;
 
 interface SongState {
   np: NowPlaying;
@@ -53,8 +53,9 @@ async function hasChild(dir: FileSystemDirectoryHandle, name: string): Promise<b
 
 class Helper {
   folders: Folders = { install: null, extra: [] };
-  /** Extra song folders listed in Etterna's Preferences.ini. */
+  /** Extra song folders listed in Etterna's Preferences.ini, and whether that file was found. */
   wanted: string[] = [];
+  prefsFound = true;
   /** Whether the browser lets the page read and write the folders right now. */
   granted = false;
   watch: 'idle' | 'ok' | 'missing' | 'denied' = 'idle';
@@ -107,8 +108,10 @@ class Helper {
     try {
       const ini = await (await (await install.getDirectoryHandle('Save')).getFileHandle('Preferences.ini')).getFile();
       this.wanted = additionalSongFolders(await ini.text());
+      this.prefsFound = true;
     } catch {
       this.wanted = [];
+      this.prefsFound = false;
     }
     this.worker.postMessage({ dir: install });
   }
@@ -218,16 +221,18 @@ class Helper {
     this.render();
   }
 
-  async apply(): Promise<void> {
+  async apply(choice: Choice): Promise<void> {
     const s = this.song;
     if (!s?.folder || !s.rec || s.busy) return;
+    // Another choice after one was applied: start from the file as it was.
+    if (s.applied) await this.undo();
     s.busy = true;
     this.render();
-    const applied: NonNullable<SongState['applied']> = { offset: s.rec.offset, files: [], skipped: [], kept: 0, undo: [] };
+    const applied: NonNullable<SongState['applied']> = { offset: choice.offset, files: [], skipped: [], kept: 0, undo: [] };
     try {
       for (const name of s.folder.simfiles) {
         const bytes = await readBytes(s.folder.dir, name);
-        const edit = withOffset(bytes, s.rec.offset);
+        const edit = withOffset(bytes, choice.offset);
         // A simfile whose offset is not the one measured (changed meanwhile, or a different file) stays.
         if (!edit || Math.abs(edit.old - s.rec.current) > 5e-7) {
           applied.skipped.push(name);
@@ -267,7 +272,8 @@ class Helper {
   render(): void {
     const s = this.song;
     const rec = s?.status === 'ready' ? s.rec : undefined;
-    document.title = rec && s?.title ? `${ms(-rec.shiftMs)} · ${s.title} — Etterna offset helper` : 'Etterna offset helper';
+    const tag = rec && (rec.choices.length > 1 ? '?' : ms(-rec.choices[0].shiftMs));
+    document.title = tag && s?.title ? `${tag} · ${s.title} — Etterna offset helper` : 'Etterna offset helper';
     const parts: (HTMLElement | null)[] = [
       h('header', {}, h('h1', {}, 'Etterna offset helper'), this.watchLine()),
       this.message ? h('p', { class: 'notice' }, this.message) : null,
@@ -286,8 +292,8 @@ class Helper {
       ),
     ];
     this.root.replaceChildren(...parts.filter((p): p is HTMLElement => p !== null));
-    const canvas = this.root.querySelector<HTMLCanvasElement>('canvas.strip');
-    if (canvas && rec) drawStrip(canvas, rec);
+    const canvas = this.root.querySelector<HTMLCanvasElement>('canvas.map');
+    if (canvas && rec) drawMap(canvas, rec);
   }
 
   private watchLine(): HTMLElement {
@@ -336,7 +342,10 @@ class Helper {
       h('h2', {}, 'Folders'),
       ...rows,
       f.install && this.granted && missing.length
-        ? h('p', { class: 'hint' }, 'Etterna also loads songs from the folders above (from its Preferences.ini). Web pages cannot open a folder by its path, so add each one once.')
+        ? h('p', { class: 'hint' }, 'Etterna also loads songs from the folders above (listed in its Save/Preferences.ini). Web pages cannot open a folder by its path, so add each one once.')
+        : null,
+      f.install && this.granted && !this.prefsFound
+        ? h('p', { class: 'warn' }, `“${f.install.name}” has no Save/Preferences.ini, so Etterna’s extra song folders (AdditionalSongFolders) cannot be listed. Is it the folder Etterna.exe is in? Otherwise add them with “Add another songs folder…”.`)
         : null,
       h(
         'div',
@@ -366,37 +375,60 @@ class Helper {
     }
     if (s.status === 'error' || !s.rec) return h('section', { class: 'card' }, head, h('p', { class: 'error' }, s.error ?? 'Something went wrong.'));
     const rec = s.rec;
-    const change = -rec.shiftMs;
-    const inSync = Math.abs(change) < IN_SYNC_MS;
-    const wide = rec.spread[1] - rec.spread[0] > 2 * WIDE_MS;
-    const music = `The music comes ${Math.abs(rec.shiftMs).toFixed(1)} ms ${rec.shiftMs < 0 ? 'before' : 'after'} the chart’s beats`;
     const a = s.applied;
+    const sure = rec.choices.length === 1;
+    const best = rec.choices[0];
+    const inSync = sure && Math.abs(best.shiftMs) < IN_SYNC_MS;
+    const drift = best.spread[1] - best.spread[0] > 2 * DRIFT_MS;
+    const music = `The music comes ${Math.abs(best.shiftMs).toFixed(1)} ms ${best.shiftMs < 0 ? 'before' : 'after'} the chart’s beats`;
+    const applyButton = (c: Choice, label: string, primary: boolean) => {
+      const done = a !== undefined && Math.abs(a.offset - c.offset) < 5e-7;
+      return h('button', { type: 'button', class: primary && !done ? 'primary' : '', disabled: s.busy || done, onclick: () => void this.apply(c) }, done ? 'Applied' : label);
+    };
+    const choiceRows = rec.choices.map((c, i) =>
+      h(
+        'div',
+        { class: 'choice' },
+        h('span', { class: 'mark' }, String(i + 1)),
+        h('span', { class: 'num' }, ms(-c.shiftMs)),
+        h('span', { class: 'num muted' }, seconds(c.offset)),
+        h('span', { class: 'bar', title: `Attacks there over the whole song: ${Math.round(c.strength * 100)}% of the strongest place` }, h('span', { style: `width:${Math.round(c.strength * 100)}%` })),
+        applyButton(c, 'Apply', i === 0),
+      ),
+    );
     return h(
       'section',
       { class: 'card' },
       head,
-      h(
-        'div',
-        { class: 'offsets' },
-        h('div', {}, h('span', { class: 'label' }, 'Offset now'), h('span', { class: 'num' }, seconds(rec.current))),
-        h('div', {}, h('span', { class: 'label' }, 'Recommended'), h('span', { class: `num ${inSync ? '' : 'accent'}` }, seconds(rec.offset))),
-        h('div', {}, h('span', { class: 'label' }, 'Change'), h('span', { class: `num ${inSync ? '' : 'accent'}` }, ms(change))),
-      ),
-      h(
-        'p',
-        { class: 'summary' },
-        inSync ? `In sync: within ${IN_SYNC_MS} ms, nothing to fix. ` : `${music}. `,
-        `Measured from ${rec.used} clear stretches of 8 beats; after the fix the middle 80% of them sit within ${ms(rec.spread[0])} … ${ms(rec.spread[1])}.`,
-      ),
-      wide ? h('p', { class: 'warn' }, 'The sync wanders along the song, so one offset cannot fix all of it: the BPMs may need fixing (Fix offset + BPMs in Better Arrow Vortex’s Adjust sync).') : null,
+      sure
+        ? h(
+            'div',
+            { class: 'offsets' },
+            h('div', {}, h('span', { class: 'label' }, 'Offset now'), h('span', { class: 'num' }, seconds(rec.current))),
+            h('div', {}, h('span', { class: 'label' }, 'Recommended'), h('span', { class: `num ${inSync ? '' : 'accent'}` }, seconds(best.offset))),
+            h('div', {}, h('span', { class: 'label' }, 'Change'), h('span', { class: `num ${inSync ? '' : 'accent'}` }, ms(-best.shiftMs))),
+          )
+        : h('div', { class: 'offsets' }, h('div', {}, h('span', { class: 'label' }, 'Offset now'), h('span', { class: 'num' }, seconds(rec.current)))),
+      sure
+        ? h(
+            'p',
+            { class: 'summary' },
+            inSync ? `In sync: within ${IN_SYNC_MS} ms, nothing to fix. ` : `${music}. `,
+            `Measured from ${best.used} clear stretches of 8 beats; after the fix the middle 80% of them sit within ${ms(best.spread[0])} … ${ms(best.spread[1])}.`,
+          )
+        : h(
+            'p',
+            { class: 'warn' },
+            'Not sure where the beat is: the music has strong attacks at more than one place near the chart’s beats (often a 16th note apart, or the chart is more than 40 ms off), and either could be the beat. ',
+            'The bright lines in the map below are those places. Try 1 in Etterna; if it feels a 16th note off, apply 2.',
+          ),
+      sure ? null : h('div', { class: 'choices' }, ...choiceRows),
+      drift && sure ? h('p', { class: 'warn' }, 'The sync wanders along the song, so one offset cannot fix all of it: the BPMs may need fixing (Fix offset + BPMs in Better Arrow Vortex’s Adjust sync).') : null,
       s.splitTiming ? h('p', { class: 'warn' }, 'Some charts have their own timing. Their offsets move only where they equal the song’s.') : null,
-      h('canvas', { class: 'strip', title: 'The sync along the song: each dot is 8 beats. Dashed: where the fix puts the beats.' }),
-      h(
-        'div',
-        { class: 'actions' },
-        h('button', { type: 'button', class: inSync ? '' : 'primary', disabled: s.busy || (a && Math.abs(a.offset - rec.offset) < 5e-7), onclick: () => void this.apply() }, a ? 'Applied' : 'Apply offset'),
-        a ? h('button', { type: 'button', class: 'quiet', disabled: s.busy, onclick: () => void this.undo() }, 'Undo') : null,
-      ),
+      h('canvas', { class: 'map', title: 'The sync map: the music’s attacks around each beat along the song (up is later). Blue: the chart’s beats now. Cyan: measured. Dashed: where each choice puts the beats.' }),
+      h('p', { class: 'legend' }, `Up to ${WIDE_MS} ms either side of the beats along the song, up is later. Blue: the chart’s beats now; cyan: measured; dashed: ${sure ? 'where the fix puts them' : 'the choices'}.`),
+      sure ? h('div', { class: 'actions' }, applyButton(best, 'Apply offset', !inSync), a ? h('button', { type: 'button', class: 'quiet', disabled: s.busy, onclick: () => void this.undo() }, 'Undo') : null) : null,
+      !sure && a ? h('div', { class: 'actions' }, h('button', { type: 'button', class: 'quiet', disabled: s.busy, onclick: () => void this.undo() }, 'Undo')) : null,
       a
         ? h(
             'p',
@@ -413,44 +445,99 @@ class Helper {
   }
 }
 
-/** The sync along the song: a dot per clear stretch (later is up), 0 where the beats are now, dashed where the fix puts them. */
-function drawStrip(canvas: HTMLCanvasElement, rec: Recommendation): void {
+/**
+ * The sync map, as in Better Arrow Vortex's Adjust sync: one pixel column per slice of the song,
+ * bright where the music's attacks are around the chart's beats (top +WIDE_MS ms, later).
+ */
+function drawMap(canvas: HTMLCanvasElement, rec: Recommendation): void {
   const dpr = window.devicePixelRatio || 1;
   const w = canvas.clientWidth;
   const hgt = canvas.clientHeight;
-  canvas.width = Math.round(w * dpr);
-  canvas.height = Math.round(hgt * dpr);
+  const pw = Math.max(1, Math.round(w * dpr));
+  const ph = Math.max(1, Math.round(hgt * dpr));
+  canvas.width = pw;
+  canvas.height = ph;
   const ctx = canvas.getContext('2d')!;
-  ctx.scale(dpr, dpr);
-  const css = getComputedStyle(canvas);
-  const color = (name: string) => css.getPropertyValue(name).trim();
-  // Scaled to the bulk of the song; the odd stretch further out sits on the edge.
-  const range = Math.max(20, Math.abs(rec.shiftMs) + 2.5 * Math.max(Math.abs(rec.spread[0]), Math.abs(rec.spread[1])));
-  const y = (v: number) => hgt / 2 - (Math.max(-range, Math.min(range, v)) / range) * (hgt / 2 - 6);
-  ctx.strokeStyle = color('--border');
-  ctx.lineWidth = 1;
-  ctx.beginPath();
-  ctx.moveTo(0, Math.round(y(0)) + 0.5);
-  ctx.lineTo(w, Math.round(y(0)) + 0.5);
-  ctx.stroke();
-  ctx.strokeStyle = color('--accent');
-  ctx.setLineDash([4, 4]);
-  ctx.beginPath();
-  ctx.moveTo(0, Math.round(y(rec.shiftMs)) + 0.5);
-  ctx.lineTo(w, Math.round(y(rec.shiftMs)) + 0.5);
-  ctx.stroke();
-  ctx.setLineDash([]);
-  ctx.fillStyle = color('--text');
-  for (const p of rec.points) {
-    if (p.offset === null) continue;
-    ctx.beginPath();
-    ctx.arc((p.time / rec.duration) * w, y(p.offset), 2.2, 0, 2 * Math.PI);
-    ctx.fill();
+  const pixels = ctx.createImageData(pw, ph);
+  const px = pixels.data;
+  const rowOf = new Int32Array(ph);
+  for (let y = 0; y < ph; ++y) rowOf[y] = Math.round((WIDE_ROWS - 1) * (1 - (y + 0.5) / ph));
+  const column = new Float32Array(WIDE_ROWS);
+  const nBeats = rec.beats.length;
+  let b = 0;
+  for (let x = 0; x < pw; ++x) {
+    const t0 = (x / pw) * rec.duration;
+    const t1 = ((x + 1) / pw) * rec.duration;
+    // The beats in this slice, widened to at least 8 (the stretch the measurement uses) so a
+    // single quiet beat does not show as noise.
+    while (b < nBeats && rec.beats[b] < t0) ++b;
+    let end = b;
+    while (end < nBeats && rec.beats[end] < t1) ++end;
+    let lo = b;
+    let hi = end;
+    while (hi - lo < 8 && (lo > 0 || hi < nBeats)) {
+      if (lo > 0) --lo;
+      if (hi - lo < 8 && hi < nBeats) ++hi;
+    }
+    const near = lo < nBeats && (hi > b || (b > 0 && t0 - rec.beats[b - 1] < 2));
+    column.fill(0);
+    const n = near ? hi - lo : 0;
+    for (let j = lo; j < hi && near; ++j) for (let k = 0; k < WIDE_ROWS; ++k) column[k] += rec.columns[j * WIDE_ROWS + k];
+    for (let y = 0; y < ph; ++y) {
+      const v = n ? column[rowOf[y]] / n : 0;
+      const g = Math.round(18 + 237 * v * v);
+      const i = (y * pw + x) * 4;
+      px[i] = px[i + 1] = px[i + 2] = g;
+      px[i + 3] = 255;
+    }
   }
-  ctx.fillStyle = color('--muted');
-  ctx.font = '11px system-ui, sans-serif';
-  ctx.fillText(`music later ${ms(range, 0)}`, 4, 12);
-  ctx.fillText(`earlier ${ms(-range, 0)}`, 4, hgt - 4);
+  ctx.putImageData(pixels, 0, 0);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const xOf = (t: number) => (t / rec.duration) * w;
+  const yOf = (v: number) => hgt / 2 - (v / WIDE_MS) * (hgt / 2);
+
+  ctx.font = '9px system-ui, sans-serif';
+  ctx.textBaseline = 'middle';
+  for (const v of [-75, -50, -25, 25, 50, 75]) {
+    ctx.fillStyle = 'rgba(255,255,255,0.10)';
+    ctx.fillRect(0, Math.round(yOf(v)), w, 1);
+    ctx.fillStyle = 'rgba(255,255,255,0.45)';
+    ctx.fillText(`${v > 0 ? '+' : '−'}${Math.abs(v)}`, 3, yOf(v));
+  }
+  ctx.fillStyle = 'rgba(74,143,217,0.75)';
+  ctx.fillRect(0, Math.round(yOf(0)), w, 1);
+
+  // Where each choice puts the beats.
+  ctx.strokeStyle = 'rgba(255,170,40,0.9)';
+  ctx.fillStyle = 'rgba(255,170,40,0.95)';
+  ctx.setLineDash([5, 4]);
+  ctx.lineWidth = 1;
+  rec.choices.forEach((c, i) => {
+    const y = Math.round(yOf(c.shiftMs)) + 0.5;
+    ctx.beginPath();
+    ctx.moveTo(14, y);
+    ctx.lineTo(w - 14, y);
+    ctx.stroke();
+    if (rec.choices.length > 1) ctx.fillText(String(i + 1), w - 10, y);
+  });
+  ctx.setLineDash([]);
+
+  // The measured sync over every 8 beats, where it is clear.
+  ctx.strokeStyle = 'rgba(90,209,255,0.9)';
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  let drawing = false;
+  for (const o of rec.points) {
+    if (o.offset === null) {
+      drawing = false;
+      continue;
+    }
+    const [x, y] = [xOf(o.time), yOf(o.offset)];
+    if (drawing) ctx.lineTo(x, y);
+    else ctx.moveTo(x, y);
+    drawing = true;
+  }
+  ctx.stroke();
 }
 
 const helper = new Helper(document.getElementById('helper')!);

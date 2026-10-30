@@ -12,7 +12,8 @@ Live: **https://maidoffire.github.io/etterna-offset-helper/** (Chrome or Edge, f
    its path). The folders are remembered; after a browser restart one click allows them again.
 2. Play a song. Etterna's Til' Death and Rebirth themes write `nowplaying.txt` (title, artist,
    pack) when gameplay starts; the helper finds that song and measures it in a second or two.
-3. It shows the offset now, the recommended one and the sync along the song. **Apply offset**
+3. It shows the offset now, the recommended one and the sync map (the music's attacks around the
+   chart's beats along the song, as in Better Arrow Vortex's Adjust sync). **Apply offset**
    changes only the `#OFFSET` value in the song's `.ssc`/`.sm`, byte for byte (Undo puts it back).
    Back on song select with the song selected, **Ctrl+Shift+R** makes Etterna read it again.
 
@@ -29,6 +30,20 @@ and the median of where those peaks sit is how far the offset is off. It runs on
 Etterna plays: browsers cut an MP3's encoder lead-in and skip its "Info" header frame, which
 Etterna plays as silence, so that time is put back first (25 ms for a LAME VBR file, 51 ms for
 CBR at 44.1 kHz).
+
+## When it is not sure
+
+Fast music often has an attack on every 16th note (54-79 ms apart at 190-280 BPM), so a chart far
+enough off looks like one in sync a 16th away. The attacks are summed over the whole song out to
+±100 ms around the beats; when another place is at least 80% as strong as the chosen one, the
+helper says it is not sure and lists the places (strongest first), each with its own Apply. On a
+jumpstream pack (44 songs) with offsets moved 40-75 ms on purpose, the right fix was the first
+choice 234 times out of 264 and among the choices 260 times; charts as they were (in sync) got
+the warning twice out of 44, both songs whose 16ths are 80-93% as strong as their beats. A chart
+more than 100 ms off is beyond what it looks at.
+
+The decoding matches Etterna's: Chrome decodes OGG exactly as libvorbisfile (Etterna's decoder)
+and ffmpeg do, sample for sample, and MP3s as ffmpeg does once the lead-in is put back.
 
 ## Running
 
@@ -48,7 +63,7 @@ src/main.ts         the page: folders, watching, results, Apply / Undo
 src/watchWorker.ts  reads nowplaying.txt every second (a worker keeps that pace in a background tab)
 src/nowPlaying.ts   reading nowplaying.txt and finding the song folder
 src/offsetFile.ts   changing #OFFSET in place; Etterna's extra song folders
-src/recommend.ts    the recommended offset for a song
+src/recommend.ts    the recommended offset for a song, and the other places the beat could be
 src/store.ts        the chosen folders, kept in IndexedDB
 src/analysis/       onset curve, sync map, sync fix and MP3 lead-in
 src/model/          simfile types, parser and timing
