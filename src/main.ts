@@ -112,6 +112,7 @@ class Helper {
   private async permitted(ask: boolean): Promise<boolean> {
     const wants: [FileSystemHandle, 'read' | 'readwrite'][] = this.handles().map((d) => [d, 'readwrite']);
     if (this.folders.prefsFile) wants.push([this.folders.prefsFile, 'read']);
+    if (this.folders.nowPlayingFile) wants.push([this.folders.nowPlayingFile, 'read']);
     for (const [d, mode] of wants) {
       if (!d.queryPermission || !d.requestPermission) continue;
       let state = await d.queryPermission({ mode });
@@ -125,7 +126,7 @@ class Helper {
   private async connected(): Promise<void> {
     await this.readPrefs();
     await this.checkGame();
-    this.worker.postMessage({ dir: this.folders.install! });
+    this.worker.postMessage({ dir: this.folders.install!, nowPlaying: this.folders.nowPlayingFile });
   }
 
   /**
@@ -535,16 +536,44 @@ class Helper {
     if (canvas && rec) drawMap(canvas, s?.after ?? rec, canvas.clientWidth, canvas.clientHeight, window.devicePixelRatio || 1);
   }
 
+  /** For themes that write the now-playing line elsewhere: watch the file picked by hand (or nowplaying.txt again). */
+  async chooseNowPlaying(reset = false): Promise<void> {
+    if (reset) delete this.folders.nowPlayingFile;
+    else {
+      try {
+        [this.folders.nowPlayingFile] = await window.showOpenFilePicker!({ id: 'etterna-nowplaying', startIn: this.folders.install ?? undefined, types: [{ description: 'Now-playing text', accept: { 'text/plain': ['.txt'] } }] });
+      } catch {
+        return; // cancelled
+      }
+    }
+    await saveFolders(this.folders);
+    this.watch = 'idle';
+    this.worker.postMessage({ dir: this.folders.install!, nowPlaying: this.folders.nowPlayingFile });
+    this.render();
+  }
+
   private watchLine(): HTMLElement {
     let text: string;
     let state = 'off';
     if (!window.showDirectoryPicker) text = 'Needs Chrome or Edge (folder access).';
     else if (!this.folders.install) text = 'Choose the Etterna folder to start.';
     else if (!this.granted) text = 'Paused: the browser needs your OK to read the folders again.';
-    else if (this.watch === 'missing') text = 'Waiting for nowplaying.txt: Etterna writes it when a song starts.';
+    else if (this.watch === 'missing') text = `Waiting for ${this.folders.nowPlayingFile?.name ?? 'nowplaying.txt'}: the theme writes it when a song starts.`;
     else if (this.watch === 'ok') [text, state] = [this.inGameplay ? 'Watching: in gameplay' : 'Watching: not in gameplay', 'on'];
     else text = 'Starting…';
-    return h('p', { class: `watch ${state}` }, h('span', { class: 'dot' }), text);
+    const chosen = this.folders.nowPlayingFile;
+    // Some themes write the now-playing line elsewhere: it can be picked by hand.
+    const pick =
+      this.granted && window.showOpenFilePicker && (chosen || this.watch === 'missing')
+        ? h(
+            'span',
+            { class: 'watch-file' },
+            chosen ? `(${chosen.name}) ` : null,
+            h('button', { type: 'button', class: 'link', onclick: () => void this.chooseNowPlaying() }, chosen ? 'Change…' : 'Choose the now-playing file…'),
+            chosen ? h('button', { type: 'button', class: 'link', onclick: () => void this.chooseNowPlaying(true) }, 'Use nowplaying.txt') : null,
+          )
+        : null;
+    return h('p', { class: `watch ${state}` }, h('span', { class: 'dot' }), text, pick);
   }
 
   private foldersCard(): HTMLElement {

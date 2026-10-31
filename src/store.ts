@@ -12,6 +12,8 @@ export interface Folders {
   extra: SongsFolder[];
   /** Etterna's Preferences.ini chosen by hand, when the one in Save could not be read. */
   prefsFile?: FileSystemFileHandle;
+  /** The now-playing file chosen by hand, for themes that write it somewhere else than nowplaying.txt in the Etterna folder. */
+  nowPlayingFile?: FileSystemFileHandle;
 }
 
 const DB = 'etterna-offset-helper';

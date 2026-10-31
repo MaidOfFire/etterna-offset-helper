@@ -3,11 +3,14 @@
 // background, where Chrome slows a page's own timers to once a minute.
 
 let dir: FileSystemDirectoryHandle | null = null;
+/** A now-playing file picked by hand (themes that write it elsewhere), else nowplaying.txt in the Etterna folder. */
+let nowPlaying: FileSystemFileHandle | undefined;
 let seen = '';
 let seenRequest = '';
 
-self.onmessage = (e: MessageEvent<{ dir: FileSystemDirectoryHandle }>) => {
+self.onmessage = (e: MessageEvent<{ dir: FileSystemDirectoryHandle; nowPlaying?: FileSystemFileHandle }>) => {
   dir = e.data.dir;
+  nowPlaying = e.data.nowPlaying;
   seen = '';
   seenRequest = '';
 };
@@ -15,7 +18,7 @@ self.onmessage = (e: MessageEvent<{ dir: FileSystemDirectoryHandle }>) => {
 async function pollNowPlaying(): Promise<void> {
   if (!dir) return;
   try {
-    const file = await (await dir.getFileHandle('nowplaying.txt')).getFile();
+    const file = await (nowPlaying ?? (await dir.getFileHandle('nowplaying.txt'))).getFile();
     const key = `${file.lastModified}:${file.size}`;
     if (key === seen) return;
     seen = key;
