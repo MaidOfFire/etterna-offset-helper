@@ -1,13 +1,15 @@
 // The Etterna offset helper: a page that watches what Etterna plays (nowplaying.txt in its folder),
 // measures that song's offset the way Better Arrow Vortex's sync map does ("Fix offset"), and
 // writes the fix into the simfile on Apply. Etterna reads the song again with Ctrl+Shift+R on song
-// select.
+// select. It also answers the in-game part it can install into Til' Death (see game.ts).
 
 import './style.css';
 import { h } from './dom';
 import { findChild, findFile, firstAudio } from './files';
 import { loadSimfile } from './model/simfileIO';
-import { findSong, parseNowPlaying, type NowPlaying, type SongFolder } from './nowPlaying';
+import { GAME_DIR, LOAD_LINE, formatFields, parseRequest, songPath, withLoadLine, withoutLoadLine } from './game';
+import { chosenSimfile, findSong, parseNowPlaying, type NowPlaying, type SongFolder } from './nowPlaying';
+import themeLua from './theme/offsethelper.lua?raw';
 import { additionalSongFolders, readOffset, withOffset } from './offsetFile';
 import type { TimingData } from './model/types';
 import { WIDE_MS, WIDE_ROWS, analyzeMusic, recommendFromCurve, type Choice, type MusicAnalysis, type Recommendation } from './recommend';
@@ -19,7 +21,9 @@ const IN_SYNC_MS = 2;
 const DRIFT_MS = 10;
 
 interface SongState {
-  np: NowPlaying;
+  /** What started it: the line in nowplaying.txt, or the song folder the in-game part named. */
+  np?: NowPlaying;
+  gameDir?: string;
   status: 'finding' | 'measuring' | 'ready' | 'error';
   error?: string;
   folder?: SongFolder;
@@ -68,11 +72,18 @@ class Helper {
   inGameplay = false;
   song: SongState | null = null;
   message = '';
+  /** The in-game part in Til' Death: not looked for yet, absent, installed, or installed but older than this page's. */
+  game: { state: 'unknown' | 'absent' | 'installed' | 'outdated' | 'unavailable'; theme?: string; note?: string } = { state: 'unknown' };
   private readonly worker = new Worker(new URL('./watchWorker.ts', import.meta.url), { type: 'module' });
   private run = 0;
+  private lastRequest = '';
 
   constructor(private readonly root: HTMLElement) {
-    this.worker.onmessage = (e: MessageEvent<{ text?: string; error?: string }>) => {
+    this.worker.onmessage = (e: MessageEvent<{ text?: string; error?: string; request?: string }>) => {
+      if (e.data.request !== undefined) {
+        void this.onRequest(e.data.request);
+        return;
+      }
       if (e.data.error) {
         this.watch = e.data.error === 'denied' ? 'denied' : 'missing';
         if (e.data.error === 'denied') this.granted = false;
@@ -113,6 +124,7 @@ class Helper {
   /** With access granted: read the extra song folders Etterna uses, and start watching. */
   private async connected(): Promise<void> {
     await this.readPrefs();
+    await this.checkGame();
     this.worker.postMessage({ dir: this.folders.install! });
   }
 
@@ -180,7 +192,7 @@ class Helper {
     this.folders.extra.push({ path: path ?? dir.name, handle: dir });
     await saveFolders(this.folders);
     this.render();
-    if (this.song?.status === 'error' && this.song.np) void this.measure(this.song.np);
+    if (this.song?.status === 'error' && this.song.np) void this.measure({ np: this.song.np });
   }
 
   async removeSongsFolder(path: string): Promise<void> {
@@ -211,26 +223,28 @@ class Helper {
     if (!np) return this.render();
     // The same song started again: measure again only if its offset changed on disk.
     const s = this.song;
-    if (s && s.np.line === np.line && s.folder && s.rec) {
+    if (s && s.np?.line === np.line && s.folder && s.rec) {
       const now = readOffset(await readBytes(s.folder.dir, s.folder.simfile).catch(() => new Uint8Array()));
       if (now !== null && Math.abs(now - s.rec.current) < 5e-7) return this.render();
     }
-    await this.measure(np);
+    await this.measure({ np });
   }
 
-  async measure(np: NowPlaying): Promise<void> {
+  /** Measures a song: the one in nowplaying.txt (looked up by title), or a song folder the in-game part named. */
+  async measure(target: { np: NowPlaying } | { folder: SongFolder; gameDir: string }): Promise<SongState> {
     const run = ++this.run;
-    const song: SongState = { np, status: 'finding' };
+    const song: SongState = 'np' in target ? { np: target.np, status: 'finding' } : { gameDir: target.gameDir, status: 'finding' };
     this.song = song;
     this.render();
     const stale = () => run !== this.run;
     if (this.prefsError) await this.readPrefs();
     try {
-      const found = await findSong(np, await this.songRoots());
-      if (stale()) return;
+      const found = 'np' in target ? await findSong(target.np, await this.songRoots()) : [target.folder];
+      if (stale()) return song;
       if (!found.length) {
         const where = ['Songs', ...this.folders.extra.map((f) => f.path)].join(', ');
-        return this.fail(song, `Could not find this song in ${where}. If it lives in another songs folder, add that folder above.`);
+        this.fail(song, `Could not find this song in ${where}. If it lives in another songs folder, add that folder above.`);
+        return song;
       }
       const [folder, ...others] = found;
       Object.assign(song, { folder, others, status: 'measuring' });
@@ -239,15 +253,198 @@ class Helper {
       const sim = loadSimfile(text, folder.simfile);
       Object.assign(song, { title: sim.meta.TITLE, artist: sim.meta.ARTIST, splitTiming: sim.charts.some((c) => c.timing) });
       const music = (sim.meta.MUSIC ? await findFile(folder.dir, sim.meta.MUSIC) : null) ?? (await firstAudio(folder.dir));
-      if (!music) return this.fail(song, `The music file “${sim.meta.MUSIC}” is not in the song folder.`);
+      if (!music) {
+        this.fail(song, `The music file “${sim.meta.MUSIC}” is not in the song folder.`);
+        return song;
+      }
       const analysis = await analyzeMusic(await music.arrayBuffer());
-      if (stale()) return;
+      if (stale()) return song;
       const rec = recommendFromCurve(sim.timing, analysis.curve, analysis.duration);
-      if ('error' in rec) return this.fail(song, rec.error);
+      if ('error' in rec) {
+        this.fail(song, rec.error);
+        return song;
+      }
       Object.assign(song, { rec, timing: sim.timing, music: analysis, status: 'ready' });
     } catch (e) {
-      if (!stale()) return this.fail(song, (e as Error).message);
+      if (!stale()) this.fail(song, (e as Error).message);
+      return song;
     }
+    this.render();
+    return song;
+  }
+
+  // ----------------------------------------------------------------------------------------------
+  // The in-game part (theme/offsethelper.lua): its requests, and installing it into Til' Death.
+
+  /** A request from the game, answered in OffsetHelper/result.txt (after a quick "busy" so it knows the page is there). */
+  private async onRequest(text: string): Promise<void> {
+    const req = parseRequest(text);
+    if (!req || req.id === this.lastRequest || !this.granted) return;
+    this.lastRequest = req.id;
+    const id = req.id;
+    try {
+      await this.answer({ id, status: 'busy' });
+      if (req.action === 'measure') {
+        const folder = await this.folderOf(req.dir);
+        if (typeof folder === 'string') return await this.answer({ id, status: 'error', message: folder });
+        const s = await this.measure({ folder, gameDir: req.dir });
+        if (s.status !== 'ready' || !s.rec) return await this.answer({ id, status: 'error', message: s.error ?? 'could not measure it' });
+        const rec = s.rec;
+        const choices: Record<string, string> = {};
+        rec.choices.forEach((c, i) => (choices[`choice${i + 1}`] = `${c.offset.toFixed(6)} ${(-c.shiftMs >= 0 ? '+' : '') + (-c.shiftMs).toFixed(1)}`));
+        const sure = rec.choices.length === 1;
+        return await this.answer({
+          id,
+          status: 'ready',
+          current: rec.current.toFixed(6),
+          sure: sure ? 1 : 0,
+          insync: sure && Math.abs(rec.choices[0].shiftMs) < IN_SYNC_MS ? 1 : 0,
+          ...choices,
+          map: await this.writeMap(rec, id),
+        });
+      }
+      const s = this.song;
+      if (!s?.rec || s.gameDir !== req.dir) return await this.answer({ id, status: 'error', message: 'press Sync first' });
+      if (req.action === 'apply') {
+        const choice = s.rec.choices[(req.choice ?? 1) - 1];
+        if (!choice) return await this.answer({ id, status: 'error', message: 'no such choice' });
+        await this.apply(choice);
+        if (!s.applied?.files.length) return await this.answer({ id, status: 'error', message: this.message || 'the offset in the file changed: press Sync again' });
+        return await this.answer({ id, status: 'applied', offset: choice.offset.toFixed(6), map: s.after ? await this.writeMap(s.after, id) : undefined });
+      }
+      await this.undo();
+      return await this.answer({ id, status: 'restored', map: await this.writeMap(s.rec, id) });
+    } catch (e) {
+      await this.answer({ id, status: 'error', message: (e as Error).message }).catch(() => undefined);
+    }
+  }
+
+  private async gameDir(): Promise<FileSystemDirectoryHandle> {
+    return this.folders.install!.getDirectoryHandle(GAME_DIR, { create: true });
+  }
+
+  private async answer(fields: Record<string, string | number | undefined>): Promise<void> {
+    const dir = await this.gameDir();
+    const w = await (await dir.getFileHandle('result.txt', { create: true })).createWritable();
+    await w.write(formatFields(fields));
+    await w.close();
+  }
+
+  /** The sync map as a PNG for the game (shown over the banner, 384×120 there), and its path as Etterna sees it. */
+  private async writeMap(rec: Recommendation, id: string): Promise<string> {
+    const canvas = document.createElement('canvas');
+    drawMap(canvas, rec, 384, 120, 2);
+    const blob = await new Promise<Blob>((resolve, reject) => canvas.toBlob((b) => (b ? resolve(b) : reject(new Error('could not draw the map'))), 'image/png'));
+    const dir = await this.gameDir();
+    const name = `map-${id}.png`;
+    const w = await (await dir.getFileHandle(name, { create: true })).createWritable();
+    await w.write(blob);
+    await w.close();
+    // Older maps go; the one before stays, as the game may still show it.
+    const maps: string[] = [];
+    for await (const [n, h] of dir.entries()) if (h.kind === 'file' && /^map-\d+\.png$/.test(n) && n !== name) maps.push(n);
+    maps.sort();
+    for (const n of maps.slice(0, -1)) await dir.removeEntry(n).catch(() => undefined);
+    return `/${GAME_DIR}/${name}`;
+  }
+
+  /** A song folder as Etterna names it (/Songs/Pack/Song/ or /AdditionalSongs/Pack/Song/), or why it was not found. */
+  private async folderOf(gameDir: string): Promise<SongFolder | string> {
+    const p = songPath(gameDir);
+    if (!p) return `not a song folder: ${gameDir}`;
+    const roots = p.root === 'Songs' ? (await this.songRoots()).slice(0, this.folders.extra.length ? -this.folders.extra.length : undefined) : this.folders.extra.map((f) => f.handle);
+    if (p.root === 'AdditionalSongs' && !roots.length) return 'this song is in an extra songs folder: add it on the helper page';
+    for (const root of roots) {
+      const pack = await findChild(root, p.pack, 'directory');
+      const dir = pack && (await findChild(pack, p.song, 'directory'));
+      if (!dir) continue;
+      const names: string[] = [];
+      for await (const [n, h] of dir.entries()) if (h.kind === 'file') names.push(n);
+      const simfile = chosenSimfile(names);
+      if (simfile) return { pack: p.pack, dir, simfile, simfiles: names.filter((n) => /\.(ssc|sm)$/i.test(n)) };
+    }
+    return p.root === 'AdditionalSongs' ? 'not found in the extra songs folders added on the helper page' : 'not found in Songs';
+  }
+
+  /** Til' Death's song select decorations folder, or why it is not there. */
+  private async decorations(): Promise<{ theme: string; dir: FileSystemDirectoryHandle } | string> {
+    const themes = await findChild(this.folders.install!, 'Themes', 'directory');
+    if (!themes) return 'there is no Themes folder in the Etterna folder';
+    const names: string[] = [];
+    for await (const [n, h] of themes.entries()) if (h.kind === 'directory' && /^til'?\s*death$/i.test(n)) names.push(n);
+    const theme = names.find((n) => n === 'Til Death') ?? names[0];
+    if (!theme) return "Til' Death is not in the Themes folder";
+    const bg = await findChild(await themes.getDirectoryHandle(theme), 'BGAnimations', 'directory');
+    const dir = bg && (await findChild(bg, 'ScreenSelectMusic decorations', 'directory'));
+    if (!dir || !(await findChild(dir, 'default.lua', 'file'))) return `Themes/${theme} has no BGAnimations/ScreenSelectMusic decorations/default.lua`;
+    return { theme, dir };
+  }
+
+  private async checkGame(): Promise<void> {
+    try {
+      const d = await this.decorations();
+      if (typeof d === 'string') return void (this.game = { state: 'unavailable', note: d });
+      const lua = await findChild(d.dir, 'offsethelper.lua', 'file');
+      const main = await (await d.dir.getFileHandle('default.lua')).getFile().then((f) => f.text());
+      if (!lua || !main.includes(LOAD_LINE)) return void (this.game = { state: 'absent', theme: d.theme });
+      const same = (await (await lua.getFile()).text()) === themeLua;
+      this.game = { state: same ? 'installed' : 'outdated', theme: d.theme };
+    } catch (e) {
+      this.game = { state: 'unavailable', note: (e as Error).message };
+    }
+  }
+
+  /** Puts offsethelper.lua into Til' Death and loads it from its song select (the original file is kept in OffsetHelper/backup). */
+  async installGame(): Promise<void> {
+    try {
+      const d = await this.decorations();
+      if (typeof d === 'string') throw new Error(d);
+      const mainFile = await d.dir.getFileHandle('default.lua');
+      const original = await (await mainFile.getFile()).text();
+      const patched = withLoadLine(original);
+      if (patched === null) throw new Error(`Themes/${d.theme}/…/default.lua does not end with "return t" as expected, so it was left alone`);
+      const ours = await (await d.dir.getFileHandle('offsethelper.lua', { create: true })).createWritable();
+      await ours.write(themeLua);
+      await ours.close();
+      const game = await this.gameDir();
+      if (patched !== original) {
+        const backups = await game.getDirectoryHandle('backup', { create: true });
+        if (!(await findChild(backups, 'default.lua', 'file'))) {
+          const b = await (await backups.getFileHandle('default.lua', { create: true })).createWritable();
+          await b.write(original);
+          await b.close();
+        }
+        const w = await mainFile.createWritable();
+        await w.write(patched);
+        await w.close();
+      }
+      for (const name of ['request.txt', 'result.txt']) await game.getFileHandle(name, { create: true });
+      this.message = `Installed into Themes/${d.theme}. Restart Etterna to see the Offset line above the banner on song select, and keep this page open while you play.`;
+    } catch (e) {
+      this.message = `Could not install: ${(e as Error).message}`;
+    }
+    await this.checkGame();
+    this.render();
+  }
+
+  /** Takes the line out of Til' Death's song select and removes offsethelper.lua. */
+  async uninstallGame(): Promise<void> {
+    try {
+      const d = await this.decorations();
+      if (typeof d === 'string') throw new Error(d);
+      const mainFile = await d.dir.getFileHandle('default.lua');
+      const text = await (await mainFile.getFile()).text();
+      if (text.includes(LOAD_LINE)) {
+        const w = await mainFile.createWritable();
+        await w.write(withoutLoadLine(text));
+        await w.close();
+      }
+      await d.dir.removeEntry('offsethelper.lua').catch(() => undefined);
+      this.message = `Removed from Themes/${d.theme}. Restart Etterna for it to go.`;
+    } catch (e) {
+      this.message = `Could not uninstall: ${(e as Error).message}`;
+    }
+    await this.checkGame();
     this.render();
   }
 
@@ -319,6 +516,7 @@ class Helper {
       h('header', {}, h('h1', {}, 'Etterna offset helper'), this.watchLine()),
       this.message ? h('p', { class: 'notice' }, this.message) : null,
       this.foldersCard(),
+      this.gameCard(),
       this.songCard(),
       h(
         'details',
@@ -334,7 +532,7 @@ class Helper {
     ];
     this.root.replaceChildren(...parts.filter((p): p is HTMLElement => p !== null));
     const canvas = this.root.querySelector<HTMLCanvasElement>('canvas.map');
-    if (canvas && rec) drawMap(canvas, s?.after ?? rec);
+    if (canvas && rec) drawMap(canvas, s?.after ?? rec, canvas.clientWidth, canvas.clientHeight, window.devicePixelRatio || 1);
   }
 
   private watchLine(): HTMLElement {
@@ -402,6 +600,37 @@ class Helper {
     );
   }
 
+  private gameCard(): HTMLElement | null {
+    if (!this.folders.install || !this.granted) return null;
+    const g = this.game;
+    const what = 'An Offset line above the banner on song select: Sync measures the selected song, Apply writes the offset and reloads the song, and hovering the result shows the sync map over the banner. This page does the measuring, so keep it open while you play.';
+    const button = (label: string, onclick: () => void, primary = false) => h('button', { type: 'button', class: primary ? 'primary' : '', onclick }, label);
+    const status =
+      g.state === 'installed'
+        ? `Installed in Themes/${g.theme}.`
+        : g.state === 'outdated'
+          ? `Installed in Themes/${g.theme}, from an older version of this page.`
+          : g.state === 'absent'
+            ? `Not installed. Install adds offsethelper.lua to Themes/${g.theme} and one line to its song select; the original file is kept in OffsetHelper/backup.`
+            : g.state === 'unavailable'
+              ? `Cannot install: ${g.note}.`
+              : 'Looking for Til’ Death…';
+    return h(
+      'section',
+      { class: 'card' },
+      h('h2', {}, 'In game (Til’ Death)'),
+      h('p', { class: 'hint' }, what),
+      h('p', { class: g.state === 'unavailable' ? 'warn' : '' }, status),
+      h(
+        'div',
+        { class: 'actions' },
+        g.state === 'absent' ? button('Install into Til’ Death', () => void this.installGame(), true) : null,
+        g.state === 'outdated' ? button('Update', () => void this.installGame(), true) : null,
+        g.state === 'installed' || g.state === 'outdated' ? button('Uninstall', () => void this.uninstallGame()) : null,
+      ),
+    );
+  }
+
   private songCard(): HTMLElement | null {
     const s = this.song;
     if (!s) {
@@ -409,12 +638,12 @@ class Helper {
         ? h('section', { class: 'card empty' }, h('p', {}, 'Play a song in Etterna: its recommended offset shows here.'))
         : null;
     }
-    const where = s.folder ? `${s.folder.pack} / ${s.folder.dir.name}` : s.np.splits[0].pack;
+    const where = s.folder ? `${s.folder.pack} / ${s.folder.dir.name}` : (s.np?.splits[0].pack ?? s.gameDir ?? '');
     const head = h(
       'div',
       { class: 'song-head' },
-      h('h2', {}, s.title ?? s.np.splits[0].song),
-      h('p', { class: 'meta' }, [s.artist, where, s.np.msd !== null ? `MSD ${s.np.msd.toFixed(2)}` : null].filter(Boolean).join(' · ')),
+      h('h2', {}, s.title ?? s.np?.splits[0].song ?? s.folder?.dir.name ?? ''),
+      h('p', { class: 'meta' }, [s.artist, where, s.np?.msd != null ? `MSD ${s.np.msd.toFixed(2)}` : null, s.gameDir ? 'asked in game' : null].filter(Boolean).join(' · ')),
     );
     if (s.status === 'finding' || s.status === 'measuring') {
       return h('section', { class: 'card' }, head, h('p', { class: 'working' }, s.status === 'finding' ? 'Finding the song…' : 'Measuring the sync…'));
@@ -503,10 +732,7 @@ function mapRange(rec: Recommendation): number {
  * of the song (the beats in it averaged, or else the last beat before it), bright where the
  * music's attacks are around the chart's beats, later at the top.
  */
-function drawMap(canvas: HTMLCanvasElement, rec: Recommendation): void {
-  const dpr = window.devicePixelRatio || 1;
-  const w = canvas.clientWidth;
-  const hgt = canvas.clientHeight;
+function drawMap(canvas: HTMLCanvasElement, rec: Recommendation, w: number, hgt: number, dpr: number): void {
   const pw = Math.max(1, Math.round(w * dpr));
   const ph = Math.max(1, Math.round(hgt * dpr));
   canvas.width = pw;

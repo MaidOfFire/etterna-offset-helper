@@ -22,6 +22,24 @@ global offset in Etterna's settings is separate and is never touched. If the syn
 song (BPMs off), one offset cannot fix it: use Fix offset + BPMs in the sync map of
 [Better Arrow Vortex](https://maidoffire.github.io/better-arrow-vortex/).
 
+## In game (Til' Death)
+
+The helper can also put a line into Til' Death's song select, just above the banner: **Sync**
+measures the selected song, **Apply** writes the recommended offset and reloads the song (as
+Ctrl+Shift+R does), **Undo** puts it back, and hovering the result shows the sync map over the
+banner. When the helper is not sure, the line offers each choice instead of Apply.
+
+Install it from the helper page (In game card): it adds `offsethelper.lua` to
+`Themes/Til Death/BGAnimations/ScreenSelectMusic decorations/` and one line,
+`t[#t + 1] = LoadActor("offsethelper")`, to `default.lua` there; the original `default.lua` is
+kept in `OffsetHelper/backup/`, and Uninstall takes the line and the file out again. Restart
+Etterna after installing.
+
+Etterna's Lua cannot read audio, so the measuring stays in the page, which must be open in
+Chrome or Edge while you play. The two talk through `OffsetHelper/request.txt` (written by the
+game) and `OffsetHelper/result.txt` plus `map-*.png` (written by the page) in the Etterna folder.
+If the page does not answer within a few seconds, the line says so.
+
 ## How it measures
 
 The same way as Better Arrow Vortex's sync map: a sharp onset curve of the music (log spectral
@@ -65,6 +83,9 @@ src/nowPlaying.ts   reading nowplaying.txt and finding the song folder
 src/offsetFile.ts   changing #OFFSET in place; Etterna's extra song folders
 src/recommend.ts    the recommended offset for a song, and the other places the beat could be
 src/store.ts        the chosen folders, kept in IndexedDB
+src/game.ts         the in-game part's requests and answers; adding it to Til' Death
+src/theme/          offsethelper.lua, the in-game part (tests/theme/harness.lua runs it against
+                    stand-ins for Etterna's Lua functions: `lua tests/theme/harness.lua`)
 src/analysis/       onset curve, sync map, sync fix and MP3 lead-in
 src/model/          simfile types, parser and timing
 tests/              vitest unit tests
