@@ -222,7 +222,7 @@ local fakeFfi = {
 	},
 	new = function(kind, n, t) return {t = t} end,
 	string = function(p, n) return type(p) == "table" and p.s or p end,
-	load = function(path) if path == "E:\\Games\\Etterna\\Program\\..\\OffsetHelper\\offsethelper.dll" then loadedFrom = path return fakeLib end error("not found: " .. path) end,
+	load = function(path) if path == "E:\\Games\\Etterna\\Program\\..\\OffsetHelper\\offsethelper.dat" then loadedFrom = path return fakeLib end error("not found: " .. path) end,
 	gc = function(x) return x end
 }
 package.preload.ffi = function() return fakeFfi end

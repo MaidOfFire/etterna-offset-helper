@@ -2,7 +2,7 @@
 --
 -- A line above the banner on song select. Sync measures the selected song's offset, Apply writes
 -- the recommended one and reloads the song. Hovering the result shows the sync map over the
--- banner. The measuring is done by OffsetHelper/offsethelper.dll, loaded through LuaJIT's FFI:
+-- banner. The measuring is done by OffsetHelper/offsethelper.dat (or .dll), loaded through LuaJIT's FFI:
 -- it decodes the music as Etterna plays it and measures it as the helper page does. Without the
 -- DLL, the helper page does it (open in Chrome or Edge): this file and the page then talk through
 -- OffsetHelper/request.txt and OffsetHelper/result.txt in the Etterna folder.
@@ -107,16 +107,19 @@ local function loadNative()
 	ffi.C.GetCurrentDirectoryA(1024, buffer)
 	local cwd = ffi.string(buffer)
 	local tried = {}
+	-- The helper page saves it as offsethelper.dat (Chrome will not write .dll files); the zip has .dll.
 	for _, dir in ipairs({exeDir .. "\\..", exeDir, cwd .. "\\..", cwd}) do
-		local path = dir .. "\\OffsetHelper\\offsethelper.dll"
-		local ok, loaded = pcall(ffi.load, path)
-		if ok then
-			lib = loaded
-			return lib
+		for _, name in ipairs({"offsethelper.dat", "offsethelper.dll"}) do
+			local path = dir .. "\\OffsetHelper\\" .. name
+			local ok, loaded = pcall(ffi.load, path)
+			if ok then
+				lib = loaded
+				return lib
+			end
+			tried[#tried + 1] = path
 		end
-		tried[#tried + 1] = path
 	end
-	nativeError = "no offsethelper.dll (looked in " .. table.concat(tried, ", ") .. ")"
+	nativeError = "no offsethelper library (looked in " .. table.concat(tried, ", ") .. ")"
 	return nil
 end
 

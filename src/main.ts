@@ -56,6 +56,9 @@ async function writeBytes(dir: FileSystemDirectoryHandle, name: string, bytes: U
   await w.close();
 }
 
+/** What the page saves the native part as (Chrome will not write .dll files; the theme loads either name). */
+const DLL_NAME = 'offsethelper.dat';
+
 /** The native part (native/build.sh), served next to the page; null when this build has none. */
 let dllBytes: Promise<Uint8Array | null> | null = null;
 function nativeDll(): Promise<Uint8Array | null> {
@@ -410,7 +413,7 @@ class Helper {
       const main = await (await d.dir.getFileHandle('default.lua')).getFile().then((f) => f.text());
       if (!lua || !main.includes(LOAD_LINE)) return void (this.game = { state: 'absent', theme: d.theme });
       // Up to date when both the Lua and the DLL are this page's.
-      const dll = await findChild(await this.gameDir(), 'offsethelper.dll', 'file');
+      const dll = await findChild(await this.gameDir(), DLL_NAME, 'file');
       const ours = await nativeDll();
       const sameDll = !ours || (dll !== null && sameBytes(new Uint8Array(await (await dll.getFile()).arrayBuffer()), ours));
       const same = (await (await lua.getFile()).text()) === themeLua && sameDll;
@@ -445,16 +448,18 @@ class Helper {
         await w.close();
       }
       for (const name of ['request.txt', 'result.txt']) await game.getFileHandle(name, { create: true });
-      // The native part, which measures in game (Windows): Etterna keeps it open while running.
+      // The native part, which measures in game (Windows). Saved as .dat: Chrome refuses to write
+      // .dll files from a page; Windows loads it under any name. Etterna keeps it open while running.
       const dll = await nativeDll();
       let dllNote = '';
       if (dll) {
         try {
-          const w = await (await game.getFileHandle('offsethelper.dll', { create: true })).createWritable();
+          const w = await (await game.getFileHandle(DLL_NAME, { create: true })).createWritable();
           await w.write(dll as Uint8Array<ArrayBuffer>);
           await w.close();
-        } catch {
-          dllNote = ' The measuring DLL could not be written, probably because Etterna has it open: close Etterna and press Update.';
+        } catch (e) {
+          const why = e instanceof DOMException ? `${e.name}: ${e.message}` : String(e);
+          dllNote = ` The measuring library (OffsetHelper/${DLL_NAME}) could not be written (${why}). If Etterna is running, close it and press Update; otherwise use the zip below.`;
         }
       }
       this.message = `Installed into Themes/${d.theme}. Restart Etterna to see the Offset line above the banner on song select; it measures in game, no browser needed.${dllNote}`;
@@ -478,11 +483,11 @@ class Helper {
         await w.close();
       }
       await d.dir.removeEntry('offsethelper.lua').catch(() => undefined);
-      const dllGone = await (await this.gameDir()).removeEntry('offsethelper.dll').then(
+      const dllGone = await (await this.gameDir()).removeEntry(DLL_NAME).then(
         () => true,
         (e: DOMException) => e.name === 'NotFoundError',
       );
-      this.message = `Removed from Themes/${d.theme}. Restart Etterna for it to go.${dllGone ? '' : ' OffsetHelper/offsethelper.dll is still there (Etterna has it open): close Etterna and press Uninstall again, or delete it by hand.'}`;
+      this.message = `Removed from Themes/${d.theme}. Restart Etterna for it to go.${dllGone ? '' : ' OffsetHelper/${DLL_NAME} is still there (Etterna has it open): close Etterna and press Uninstall again, or delete it by hand.'}`;
     } catch (e) {
       this.message = `Could not uninstall: ${(e as Error).message}`;
     }
