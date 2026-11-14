@@ -67,8 +67,10 @@ local function build(def, parent)
 end
 function Actor:playcommand(name) local f = self.def[name .. "Command"] if f then f(self) end for _, c in ipairs(self.children) do c:playcommand(name) end return self end
 function Actor:queuecommand(name) return self:playcommand(name) end
+function Actor:sleep() return self end
 function Actor:xy(x, y) self.px, self.py = x, y return self end
 function Actor:x(x) self.px = x return self end
+function Actor:y(y) self.py = y return self end
 function Actor:halign(v) self.ha = v return self end
 function Actor:valign(v) self.va = v return self end
 function Actor:GetHAlign() return self.ha end
@@ -96,7 +98,7 @@ local root = build(dofile("src/theme/offsethelper.lua"))
 local function init(a) local f = a.def.InitCommand if f then f(a) end for _, c in ipairs(a.children) do init(c) end end
 init(root)
 root:playcommand("On")
-local line = root.children[2]
+local line = root.children[3]
 local map = root:GetChild("OffsetHelperMap")
 local function text(name) return line:GetChild(name).text end
 local function tick(times) for _ = 1, times or 1 do now = now + 0.05 line.update(line) end end
@@ -179,6 +181,93 @@ check("hidden on a pack (no song)", line.shown == false)
 currentSong = song
 root:playcommand("CurrentSongChangedMessage")
 check("back on a song", line.shown == true)
+
+local probe = files["/OffsetHelper/probe.txt"] or ""
+check("probe: reports the Lua it runs on", string.find(probe, "lua=Lua 5", 1, true) ~= nil and string.find(probe, "jit=none", 1, true) ~= nil, probe)
+check("probe: reports whether the FFI loads", string.find(probe, "ffi=no", 1, true) ~= nil and string.find(probe, "loop_2M_ms=", 1, true) ~= nil, probe)
+local writes = 0
+local write = File.Write
+File.Write = function(path, text) if path == "/OffsetHelper/probe.txt" then writes = writes + 1 end return write(path, text) end
+root:playcommand("On")
+check("probe: only once per start", writes == 0)
+
+-- With the DLL ---------------------------------------------------------------------------------
+-- A fake FFI and DLL: the measuring itself is tested in C (native/), here only what Lua does with it.
+
+local SM = "/AdditionalSongs/Solo Pack/Zoltraak/Zoltraak.sm"
+local ORIGINAL = "#TITLE:Zoltraak;\r\n// #OFFSET:1;\r\n#OFFSET:-0.453;\r\n#BPMS:0=145;\r\n"
+files[SM] = ORIGINAL
+files["/AdditionalSongs/Solo Pack/Zoltraak/audio.mp3"] = "MUSIC"
+FILEMAN.GetDirListing = function(_, pattern) return string.find(pattern, "%.sm$") and {SM} or {} end
+local TRUE_OFFSET = -0.438235
+local measured, decodedPaths, mapFiles = {}, {}, {}
+files["/Save/Preferences.ini"] = "[Options]\r\nAdditionalSongFolders=E:\\Games\\Etterna\\Songs_solo, D:\\Games\\common song folder\\\r\nGlobalOffsetSeconds=0\r\n"
+local fakeLib = {
+	oh_decode_file = function(path) decodedPaths[#decodedPaths + 1] = path return path == "D:\\Games\\common song folder\\Solo Pack\\Zoltraak\\audio.mp3" and {} or {error = "cannot open the music file"} end,
+	oh_error = function(song) return song.error end,
+	oh_duration = function() return 10 end,
+	oh_measure = function(song, beats, count, offset) measured[#measured + 1] = {count = count, first = beats.t[1], offset = offset} song.shift = (offset - TRUE_OFFSET) * 1000 return 0 end,
+	oh_choice_count = function() return 1 end,
+	oh_choice_offset = function() return TRUE_OFFSET end,
+	oh_choice_shift = function(song) return song.shift end,
+	oh_map_bmp_file = function(_, w, h, path) mapFiles[#mapFiles + 1] = path return 0 end,
+	oh_map_range = function() return 60 end,
+	oh_free = function() end
+}
+local loadedFrom
+local fakeFfi = {
+	cdef = function() end,
+	C = {
+		GetModuleFileNameA = function(_, buffer) buffer.s = "E:\\Games\\Etterna\\Program\\Etterna.exe" end,
+		GetCurrentDirectoryA = function(_, buffer) buffer.s = "E:\\Games\\Etterna\\Program" end
+	},
+	new = function(kind, n, t) return {t = t} end,
+	string = function(p, n) return type(p) == "table" and p.s or p end,
+	load = function(path) if path == "E:\\Games\\Etterna\\Program\\..\\OffsetHelper\\offsethelper.dat" then loadedFrom = path return fakeLib end error("not found: " .. path) end,
+	gc = function(x) return x end
+}
+package.preload.ffi = function() return fakeFfi end
+jit = {os = "Windows", arch = "x64", version = "LuaJIT 2.1", status = function() return true end}
+GAMESTATE.GetCurrentSteps = function()
+	return {GetTimingData = function()
+		return {
+			GetElapsedTimeFromBeat = function(_, b) return b * 60 / 145 + 0.453 end,
+			GetElapsedTimeFromBeatNoOffset = function(_, b) return b * 60 / 145 end
+		}
+	end}
+end
+reloads = 0
+OFFSETHELPER_PROBED = true
+root = build(dofile("src/theme/offsethelper.lua"))
+init(root)
+root:playcommand("On")
+line = root.children[3]
+map = root:GetChild("OffsetHelperMap")
+
+files["/OffsetHelper/request.txt"] = nil
+click("Sync")
+check("dll: loaded from Etterna's folder", loadedFrom ~= nil, loadedFrom)
+check("dll: no request to the page", files["/OffsetHelper/request.txt"] == nil)
+check("dll: measured with the chart's offset and beats to the end", measured[1] and math.abs(measured[1].offset + 0.453) < 1e-9 and measured[1].count == 24 and math.abs(measured[1].first - 0.453) < 1e-9, measured[1] and (measured[1].offset .. " " .. measured[1].count))
+check("dll: shows the result", text("Info") == "+14.8 ms -> -0.438235" and text("B1") == "Apply", text("Info"))
+check("dll: opens the music in the extra song folders, in order", decodedPaths[1] == "E:\\Games\\Etterna\\Songs_solo\\Solo Pack\\Zoltraak\\audio.mp3" and decodedPaths[2] == "D:\\Games\\common song folder\\Solo Pack\\Zoltraak\\audio.mp3", table.concat(decodedPaths, " | "))
+check("dll: has the map written in Etterna's folder", map.texture == "/OffsetHelper/map-native-1.bmp" and mapFiles[1] == "E:\\Games\\Etterna\\Program\\..\\OffsetHelper\\map-native-1.bmp", mapFiles[1])
+point("Info")
+tick()
+local labels = root:GetChild("OffsetHelperLabels")
+check("dll: map and its labels show on hover", map.shown and labels.shown and labels:GetChild("L1").text == "-30" and labels:GetChild("L4").text == "+30" and labels:GetChild("L5").shown == false)
+click("B1")
+check("dll: Apply changes only the offset digits", files[SM] == string.gsub(ORIGINAL, "#OFFSET:%-0%.453;", "#OFFSET:-0.438235;"), files[SM])
+check("dll: Apply reloads the song", reloads == 1)
+check("dll: says so and offers Undo", text("Info") == "applied -0.438235" and text("B1") == "Undo", text("Info"))
+check("dll: the map again with the new offset", measured[2] and math.abs(measured[2].offset - TRUE_OFFSET) < 1e-9 and math.abs(measured[2].first - (0.453 + (-0.453 - TRUE_OFFSET))) < 1e-9 and map.texture == "/OffsetHelper/map-native-2.bmp")
+click("B1")
+check("dll: Undo puts the file back", files[SM] == ORIGINAL)
+check("dll: Undo reloads and says so", reloads == 2 and text("Info") == "restored -0.453000" and text("B1") == "", text("Info"))
+click("Sync")
+files[SM] = string.gsub(ORIGINAL, "%-0%.453", "-0.5")
+click("B1")
+check("dll: a file changed meanwhile is left alone", files[SM] == string.gsub(ORIGINAL, "%-0%.453", "-0.5") and string.find(text("Info"), "changed", 1, true) ~= nil, text("Info"))
 
 print(failures == 0 and "all passed" or (failures .. " failed"))
 os.exit(failures == 0 and 0 or 1)

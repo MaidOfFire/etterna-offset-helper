@@ -35,10 +35,30 @@ Install it from the helper page (In game card): it adds `offsethelper.lua` to
 kept in `OffsetHelper/backup/`, and Uninstall takes the line and the file out again. Restart
 Etterna after installing.
 
-Etterna's Lua cannot read audio, so the measuring stays in the page, which must be open in
-Chrome or Edge while you play. The two talk through `OffsetHelper/request.txt` (written by the
-game) and `OffsetHelper/result.txt` plus `map-*.png` (written by the page) in the Etterna folder.
-If the page does not answer within a few seconds, the line says so.
+The measuring runs in game: `OffsetHelper/offsethelper.dll` (Windows), loaded through LuaJIT's
+FFI, opens the selected song's music (Etterna's Lua cannot pass binary data) and decodes it the way Etterna plays it, measuring it exactly as this page does,
+so no browser is needed while you play. The theme finds the music on disk (Etterna's folder, or the extra song folders in its Preferences.ini) and
+takes the beat times from Etterna's timing data, writes `#OFFSET` itself and keeps the original
+for Undo. Without the DLL (or its FFI), the line asks this page instead, which must then be open:
+the two talk through `OffsetHelper/request.txt` and `OffsetHelper/result.txt` plus `map-*.png`.
+
+**By hand** (any browser, e.g. Firefox or Zen): download `etterna-offset-helper-ingame.zip` from
+the page, extract it into the Etterna folder and add the one line to `default.lua` as its
+INSTALL.txt says.
+
+### The native part
+
+`native/` is the DLL's source: `offsethelper.c` is a line-for-line port of the measuring in
+`src/recommend.ts` and `src/analysis/`, `mp3.c` decodes MP3 with
+[minimp3](https://github.com/lieff/minimp3) and `ogg.c` OGG with
+[stb_vorbis](https://github.com/nothings/stb) (both public domain, in `native/vendor/`).
+`native/build.sh` builds a Mac test tool and, with mingw-w64, the Windows DLL, which is copied to
+`public/offsethelper.dll` for the page to install.
+
+Checked on a jumpstream pack (47 songs): the decoders land on Etterna's timeline to the sample
+(every MP3 against ffmpeg plus the lead-in Etterna plays, every OGG against libvorbisfile, which
+Etterna uses), and the C measuring gives the same choices as the TypeScript on the same samples
+(94 measurements, as charted and moved 70 ms).
 
 ## How it measures
 
@@ -85,7 +105,9 @@ src/recommend.ts    the recommended offset for a song, and the other places the 
 src/store.ts        the chosen folders, kept in IndexedDB
 src/game.ts         the in-game part's requests and answers; adding it to Til' Death
 src/theme/          offsethelper.lua, the in-game part (tests/theme/harness.lua runs it against
-                    stand-ins for Etterna's Lua functions: `lua tests/theme/harness.lua`)
+                    stand-ins for Etterna's Lua functions and a fake DLL: `lua tests/theme/harness.lua`)
+native/             the DLL that measures in game (C), its decoders and a test tool
+scripts/            manual-zip.sh: the in-game part as a zip, built with the site
 src/analysis/       onset curve, sync map, sync fix and MP3 lead-in
 src/model/          simfile types, parser and timing
 tests/              vitest unit tests
