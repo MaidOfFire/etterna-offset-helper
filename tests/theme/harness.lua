@@ -180,5 +180,14 @@ currentSong = song
 root:playcommand("CurrentSongChangedMessage")
 check("back on a song", line.shown == true)
 
+local probe = files["/OffsetHelper/probe.txt"] or ""
+check("probe: reports the Lua it runs on", string.find(probe, "lua=Lua 5", 1, true) ~= nil and string.find(probe, "jit=none", 1, true) ~= nil, probe)
+check("probe: reports whether the FFI loads", string.find(probe, "ffi=no", 1, true) ~= nil and string.find(probe, "loop_2M_ms=", 1, true) ~= nil, probe)
+local writes = 0
+local write = File.Write
+File.Write = function(path, text) if path == "/OffsetHelper/probe.txt" then writes = writes + 1 end return write(path, text) end
+root:playcommand("On")
+check("probe: only once per start", writes == 0)
+
 print(failures == 0 and "all passed" or (failures .. " failed"))
 os.exit(failures == 0 and 0 or 1)

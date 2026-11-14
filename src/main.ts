@@ -7,7 +7,7 @@ import './style.css';
 import { h } from './dom';
 import { findChild, findFile, firstAudio } from './files';
 import { loadSimfile } from './model/simfileIO';
-import { GAME_DIR, LOAD_LINE, formatFields, parseRequest, songPath, withLoadLine, withoutLoadLine } from './game';
+import { GAME_DIR, LOAD_LINE, formatFields, parseFields, parseRequest, songPath, withLoadLine, withoutLoadLine } from './game';
 import { chosenSimfile, findSong, parseNowPlaying, type NowPlaying, type SongFolder } from './nowPlaying';
 import themeLua from './theme/offsethelper.lua?raw';
 import { additionalSongFolders, readOffset, withOffset } from './offsetFile';
@@ -74,6 +74,8 @@ class Helper {
   message = '';
   /** The in-game part in Til' Death: not looked for yet, absent, installed, or installed but older than this page's. */
   game: { state: 'unknown' | 'absent' | 'installed' | 'outdated' | 'unavailable'; theme?: string; note?: string } = { state: 'unknown' };
+  /** What the in-game part found out about Etterna's Lua (OffsetHelper/probe.txt), and when. */
+  probe: { fields: Record<string, string>; at: number } | null = null;
   private readonly worker = new Worker(new URL('./watchWorker.ts', import.meta.url), { type: 'module' });
   private run = 0;
   private lastRequest = '';
@@ -383,6 +385,13 @@ class Helper {
 
   private async checkGame(): Promise<void> {
     try {
+      const probe = await findChild(await this.gameDir(), 'probe.txt', 'file');
+      const file = probe && (await probe.getFile());
+      this.probe = file && file.size ? { fields: parseFields(await file.text()), at: file.lastModified } : null;
+    } catch {
+      this.probe = null;
+    }
+    try {
       const d = await this.decorations();
       if (typeof d === 'string') return void (this.game = { state: 'unavailable', note: d });
       const lua = await findChild(d.dir, 'offsethelper.lua', 'file');
@@ -650,6 +659,7 @@ class Helper {
       h('h2', {}, 'In game (Til’ Death)'),
       h('p', { class: 'hint' }, what),
       h('p', { class: g.state === 'unavailable' ? 'warn' : '' }, status),
+      this.probeLine(),
       h(
         'div',
         { class: 'actions' },
@@ -657,6 +667,21 @@ class Helper {
         g.state === 'outdated' ? button('Update', () => void this.installGame(), true) : null,
         g.state === 'installed' || g.state === 'outdated' ? button('Uninstall', () => void this.uninstallGame()) : null,
       ),
+    );
+  }
+
+  /** What Etterna's Lua can do, as the in-game part reported it: whether a native library could do the measuring in game. */
+  private probeLine(): HTMLElement | null {
+    if (!this.probe) return null;
+    const f = this.probe.fields;
+    const when = new Date(this.probe.at).toLocaleString();
+    const lua = f.jit && f.jit !== 'none' ? `${f.jit} (${f.os ?? '?'} ${f.arch ?? ''}), compiler ${f.compiler ?? '?'}` : (f.lua ?? 'Lua');
+    const ffi = f.ffi_call ? `FFI ${f.ffi_call === 'works' ? 'works' : f.ffi_call}` : f.ffi === 'yes' ? 'FFI loads' : 'no FFI';
+    const verdict = f.ffi_call === 'works' ? 'A native library (DLL) can do the measuring in game.' : f.ffi === 'yes' ? 'The FFI loads, but calling Windows was not tried or failed.' : 'A native library cannot be loaded from this Etterna’s Lua.';
+    return h(
+      'p',
+      { class: 'hint', title: Object.entries(f).map(([k, v]) => `${k}=${v}`).join('\n') },
+      `Etterna’s Lua (reported ${when}): ${lua}, ${ffi}, a 2M-step loop in ${f.loop_2M_ms ?? '?'} ms. ${verdict}`,
     );
   }
 

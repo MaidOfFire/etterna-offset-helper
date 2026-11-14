@@ -22,6 +22,55 @@ local DIR = "/OffsetHelper/"
 local REQUEST = DIR .. "request.txt"
 local RESULT = DIR .. "result.txt"
 
+-- Once per start: what this Etterna's Lua can do (LuaJIT, its compiler, its FFI), to find out
+-- whether the measuring could run in game through a small native library instead of the page.
+-- Written to OffsetHelper/probe.txt (the helper page shows it); nothing else changes.
+local function probe()
+	local lines = {}
+	local function add(k, v)
+		lines[#lines + 1] = k .. "=" .. tostring(v)
+	end
+	add("lua", _VERSION)
+	if jit then
+		add("jit", jit.version)
+		add("os", jit.os)
+		add("arch", jit.arch)
+		local status = {jit.status()}
+		add("compiler", status[1] and "on" or "off")
+		add("compiler_flags", table.concat(status, " ", 2))
+	else
+		add("jit", "none")
+	end
+	local hasFfi, ffi = pcall(require, "ffi")
+	add("ffi", hasFfi and "yes" or ("no: " .. tostring(ffi)))
+	if hasFfi and jit and jit.os == "Windows" then
+		local ok, err =
+			pcall(
+			function()
+				pcall(ffi.cdef, [[
+					unsigned long GetCurrentDirectoryA(unsigned long size, char* buffer);
+					unsigned long GetModuleFileNameA(void* module, char* buffer, unsigned long size);
+				]])
+				local buffer = ffi.new("char[1024]")
+				ffi.C.GetCurrentDirectoryA(1024, buffer)
+				add("cwd", ffi.string(buffer))
+				ffi.C.GetModuleFileNameA(nil, buffer, 1024)
+				add("exe", ffi.string(buffer))
+			end
+		)
+		add("ffi_call", ok and "works" or ("failed: " .. tostring(err)))
+	end
+	-- A floating-point loop like the onset curve's inner loop (short, so an interpreter does not stall the screen).
+	local started = GetTimeSinceStart()
+	local sum = 0
+	for i = 1, 2000000 do
+		sum = sum + math.sin(i * 0.001) * 0.5
+	end
+	add("loop_2M_ms", math.floor((GetTimeSinceStart() - started) * 1000 + 0.5))
+	add("checksum", math.floor(sum))
+	File.Write(DIR .. "probe.txt", table.concat(lines, "\n") .. "\n")
+end
+
 local function mainColor(name, fallback)
 	if getMainColor then
 		return getMainColor(name)
@@ -168,6 +217,10 @@ local t =
 		self:xy(X, Y)
 	end,
 	OnCommand = function(self)
+		if not OFFSETHELPER_PROBED then
+			OFFSETHELPER_PROBED = true
+			pcall(probe)
+		end
 		local screen = SCREENMAN:GetTopScreen()
 		if screen and screen.AddInputCallback then
 			screen:AddInputCallback(
