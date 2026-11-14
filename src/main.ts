@@ -521,7 +521,7 @@ class Helper {
     const s = this.song;
     const rec = s?.status === 'ready' ? s.rec : undefined;
     const tag = rec && (rec.choices.length > 1 ? '?' : ms(-rec.choices[0].shiftMs));
-    document.title = tag && s?.title ? `${tag} · ${s.title} — Etterna offset helper` : 'Etterna offset helper';
+    document.title = tag && s?.title ? `${tag} · ${s.title} — offset helper (test)` : 'Etterna offset helper (test: LuaJIT probe)';
     const parts: (HTMLElement | null)[] = [
       h(
         'header',
