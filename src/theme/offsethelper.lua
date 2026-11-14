@@ -76,7 +76,13 @@ end
 -- which is remembered (root) to turn Etterna's paths into Windows ones. Etterna's Lua cannot pass
 -- binary data (its file reads stop at the first zero byte), so the DLL opens the music and writes
 -- the map picture itself.
-local ffi, lib, root, nativeError
+--
+-- The DLL and the decoded song live for the whole Etterna session, not in this screen's copy of
+-- the script: when the screen goes (gameplay), the garbage collector would otherwise unload the
+-- DLL and then free the song through a function in the unloaded DLL, crashing the game.
+local session = OFFSETHELPER_SESSION or {}
+OFFSETHELPER_SESSION = session
+local ffi, lib, root, nativeError = session.ffi, session.lib, session.root, nil
 local function loadNative()
 	if lib or nativeError then
 		return lib
@@ -117,6 +123,7 @@ local function loadNative()
 			local ok, loaded = pcall(ffi.load, path)
 			if ok then
 				lib, root = loaded, dir
+				session.ffi, session.lib, session.root = ffi, lib, root
 				return lib
 			end
 			tried[#tried + 1] = path
@@ -136,8 +143,15 @@ end
 local frame
 -- The request being answered (page mode): { id, action, dir, since }.
 local pending
--- Native mode: the decoded song kept for measuring again, its beats now, and the simfiles as they were.
-local native
+-- Native mode: the decoded song kept for measuring again and its beats now are session.native.
+
+-- Frees the decoded song (once another song is measured or selected).
+local function freeNative()
+	if session.native then
+		session.lib.oh_free(session.native.song)
+		session.native = nil
+	end
+end
 -- What is shown for the selected song: { dir, status, text, choices = { {offset, change}, ... }, map, applied }.
 local shown
 local mapPath
@@ -231,6 +245,7 @@ end
 local mapCount = 0
 -- The DLL's measurement as what the line shows: choices, and the sync map written as a BMP.
 local function nativeResult(dir, song)
+	local native = session.native
 	local result = {dir = dir, status = "ready", current = string.format("%.6f", native.offset), choices = {}}
 	for i = 0, lib.oh_choice_count(native.song) - 1 do
 		local shift = lib.oh_choice_shift(native.song, i)
@@ -252,10 +267,15 @@ local function nativeMeasure(song)
 	local decoded, err
 	local paths = diskPaths(song:GetMusicPath())
 	for _, path in ipairs(paths) do
-		decoded = ffi.gc(lib.oh_decode_file(path), lib.oh_free)
+		decoded = lib.oh_decode_file(path)
 		err = lib.oh_error(decoded)
 		err = err ~= nil and ffi.string(err) or nil
-		if not (err and string.find(err, "cannot open", 1, true)) then
+		if not err then
+			break
+		end
+		lib.oh_free(decoded)
+		decoded = nil
+		if not string.find(err, "cannot open", 1, true) then
 			break
 		end
 	end
@@ -269,7 +289,9 @@ local function nativeMeasure(song)
 		return {dir = song:GetSongDir(), status = "error", text = err}
 	end
 	local beats, offset = chartBeats(song, lib.oh_duration(decoded))
-	native = {dir = song:GetSongDir(), song = decoded, beats = beats, offset = offset}
+	freeNative()
+	session.native = {dir = song:GetSongDir(), song = decoded, beats = beats, offset = offset}
+	local native = session.native
 	if lib.oh_measure(decoded, ffi.new("double[?]", #beats, beats), #beats, offset) ~= 0 then
 		return {dir = song:GetSongDir(), status = "error", text = ffi.string(lib.oh_error(decoded))}
 	end
@@ -325,6 +347,7 @@ local function withOffset(text, offset)
 end
 
 local function nativeApply(song, choice)
+	local native = session.native
 	if not native or native.dir ~= song:GetSongDir() or not shown or not shown.choices or not shown.choices[choice] then
 		return {dir = song:GetSongDir(), status = "error", text = "press Sync first"}
 	end
@@ -367,6 +390,7 @@ local function nativeApply(song, choice)
 end
 
 local function nativeUndo(song)
+	local native = session.native
 	if not shown or not shown.undo then
 		return shown
 	end
@@ -560,8 +584,8 @@ local t =
 	end,
 	CurrentSongChangedMessageCommand = function(self)
 		-- The decoded song goes once another song is selected.
-		if native and native.dir ~= songDir() then
-			native = nil
+		if session.native and session.native.dir ~= songDir() then
+			freeNative()
 		end
 		self:playcommand("Show")
 	end,

@@ -200,10 +200,10 @@ files[SM] = ORIGINAL
 files["/AdditionalSongs/Solo Pack/Zoltraak/audio.mp3"] = "MUSIC"
 FILEMAN.GetDirListing = function(_, pattern) return string.find(pattern, "%.sm$") and {SM} or {} end
 local TRUE_OFFSET = -0.438235
-local measured, decodedPaths, mapFiles = {}, {}, {}
+local measured, decodedPaths, mapFiles, freed, loads = {}, {}, {}, {}, 0
 files["/Save/Preferences.ini"] = "[Options]\r\nAdditionalSongFolders=E:\\Games\\Etterna\\Songs_solo, D:\\Games\\common song folder\\\r\nGlobalOffsetSeconds=0\r\n"
 local fakeLib = {
-	oh_decode_file = function(path) decodedPaths[#decodedPaths + 1] = path return path == "D:\\Games\\common song folder\\Solo Pack\\Zoltraak\\audio.mp3" and {} or {error = "cannot open the music file"} end,
+	oh_decode_file = function(path) decodedPaths[#decodedPaths + 1] = path return path == "D:\\Games\\common song folder\\Solo Pack\\Zoltraak\\audio.mp3" and {id = #decodedPaths} or {id = #decodedPaths, error = "cannot open the music file"} end,
 	oh_error = function(song) return song.error end,
 	oh_duration = function() return 10 end,
 	oh_measure = function(song, beats, count, offset) measured[#measured + 1] = {count = count, first = beats.t[1], offset = offset} song.shift = (offset - TRUE_OFFSET) * 1000 return 0 end,
@@ -212,7 +212,7 @@ local fakeLib = {
 	oh_choice_shift = function(song) return song.shift end,
 	oh_map_bmp_file = function(_, w, h, path) mapFiles[#mapFiles + 1] = path return 0 end,
 	oh_map_range = function() return 60 end,
-	oh_free = function() end
+	oh_free = function(song) freed[#freed + 1] = song.id end
 }
 local loadedFrom
 local fakeFfi = {
@@ -223,7 +223,7 @@ local fakeFfi = {
 	},
 	new = function(kind, n, t) return {t = t} end,
 	string = function(p, n) return type(p) == "table" and p.s or p end,
-	load = function(path) if path == "E:\\Games\\Etterna\\Program\\..\\OffsetHelper\\offsethelper.dat" then loadedFrom = path return fakeLib end error("not found: " .. path) end,
+	load = function(path) loads = loads + 1 if path == "E:\\Games\\Etterna\\Program\\..\\OffsetHelper\\offsethelper.dat" then loadedFrom = path return fakeLib end error("not found: " .. path) end,
 	gc = function(x) return x end
 }
 package.preload.ffi = function() return fakeFfi end
@@ -268,6 +268,30 @@ click("Sync")
 files[SM] = string.gsub(ORIGINAL, "%-0%.453", "-0.5")
 click("B1")
 check("dll: a file changed meanwhile is left alone", files[SM] == string.gsub(ORIGINAL, "%-0%.453", "-0.5") and string.find(text("Info"), "changed", 1, true) ~= nil, text("Info"))
+
+-- Leaving song select for gameplay and coming back: the DLL stays loaded and each decoded song is
+-- freed exactly once, when another is measured or selected (freeing it after the DLL was unloaded
+-- crashed Etterna).
+local function count(list, v) local n = 0 for _, x in ipairs(list) do if x == v then n = n + 1 end end return n end
+check("session: a song that could not be opened is freed at once", count(freed, 1) == 1, table.concat(freed, ","))
+local kept = decodedPaths[#decodedPaths] and #decodedPaths
+root = build(dofile("src/theme/offsethelper.lua"))
+init(root)
+root:playcommand("On")
+line = root.children[3]
+map = root:GetChild("OffsetHelperMap")
+root:playcommand("CurrentSongChangedMessage")
+check("session: back on song select the measured song is still there", count(freed, kept) == 0, table.concat(freed, ","))
+click("Sync")
+check("session: the DLL was loaded once", loads == 1, loads)
+check("session: measuring again frees the previous song once", count(freed, kept) == 1, table.concat(freed, ","))
+local current = #decodedPaths
+currentSong = {GetSongDir = function() return "/Songs/Other/Song/" end, GetSongFilePath = song.GetSongFilePath, GetMusicPath = song.GetMusicPath}
+root:playcommand("CurrentSongChangedMessage")
+check("session: selecting another song frees it", count(freed, current) == 1, table.concat(freed, ","))
+local doubles = false
+for _, v in ipairs(freed) do if count(freed, v) > 1 then doubles = true end end
+check("session: nothing freed twice", not doubles, table.concat(freed, ","))
 
 print(failures == 0 and "all passed" or (failures .. " failed"))
 os.exit(failures == 0 and 0 or 1)
