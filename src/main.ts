@@ -56,6 +56,18 @@ async function writeBytes(dir: FileSystemDirectoryHandle, name: string, bytes: U
   await w.close();
 }
 
+/** The native part (native/build.sh), served next to the page; null when this build has none. */
+let dllBytes: Promise<Uint8Array | null> | null = null;
+function nativeDll(): Promise<Uint8Array | null> {
+  dllBytes ??= fetch(`${import.meta.env.BASE_URL}offsethelper.dll`)
+    .then((r) => (r.ok ? r.arrayBuffer().then((b) => new Uint8Array(b)) : null))
+    .then((b) => (b && b[0] === 0x4d && b[1] === 0x5a ? b : null)) // "MZ": a Windows binary, not an HTML 404 page
+    .catch(() => null);
+  return dllBytes;
+}
+
+const sameBytes = (a: Uint8Array, b: Uint8Array) => a.length === b.length && a.every((v, i) => v === b[i]);
+
 async function hasChild(dir: FileSystemDirectoryHandle, name: string): Promise<boolean> {
   for await (const [n] of dir.entries()) if (n.toLowerCase() === name.toLowerCase()) return true;
   return false;
@@ -397,7 +409,11 @@ class Helper {
       const lua = await findChild(d.dir, 'offsethelper.lua', 'file');
       const main = await (await d.dir.getFileHandle('default.lua')).getFile().then((f) => f.text());
       if (!lua || !main.includes(LOAD_LINE)) return void (this.game = { state: 'absent', theme: d.theme });
-      const same = (await (await lua.getFile()).text()) === themeLua;
+      // Up to date when both the Lua and the DLL are this page's.
+      const dll = await findChild(await this.gameDir(), 'offsethelper.dll', 'file');
+      const ours = await nativeDll();
+      const sameDll = !ours || (dll !== null && sameBytes(new Uint8Array(await (await dll.getFile()).arrayBuffer()), ours));
+      const same = (await (await lua.getFile()).text()) === themeLua && sameDll;
       this.game = { state: same ? 'installed' : 'outdated', theme: d.theme };
     } catch (e) {
       this.game = { state: 'unavailable', note: (e as Error).message };
@@ -429,7 +445,19 @@ class Helper {
         await w.close();
       }
       for (const name of ['request.txt', 'result.txt']) await game.getFileHandle(name, { create: true });
-      this.message = `Installed into Themes/${d.theme}. Restart Etterna to see the Offset line above the banner on song select, and keep this page open while you play.`;
+      // The native part, which measures in game (Windows): Etterna keeps it open while running.
+      const dll = await nativeDll();
+      let dllNote = '';
+      if (dll) {
+        try {
+          const w = await (await game.getFileHandle('offsethelper.dll', { create: true })).createWritable();
+          await w.write(dll as Uint8Array<ArrayBuffer>);
+          await w.close();
+        } catch {
+          dllNote = ' The measuring DLL could not be written, probably because Etterna has it open: close Etterna and press Update.';
+        }
+      }
+      this.message = `Installed into Themes/${d.theme}. Restart Etterna to see the Offset line above the banner on song select; it measures in game, no browser needed.${dllNote}`;
     } catch (e) {
       this.message = `Could not install: ${(e as Error).message}`;
     }
@@ -450,7 +478,11 @@ class Helper {
         await w.close();
       }
       await d.dir.removeEntry('offsethelper.lua').catch(() => undefined);
-      this.message = `Removed from Themes/${d.theme}. Restart Etterna for it to go.`;
+      const dllGone = await (await this.gameDir()).removeEntry('offsethelper.dll').then(
+        () => true,
+        (e: DOMException) => e.name === 'NotFoundError',
+      );
+      this.message = `Removed from Themes/${d.theme}. Restart Etterna for it to go.${dllGone ? '' : ' OffsetHelper/offsethelper.dll is still there (Etterna has it open): close Etterna and press Uninstall again, or delete it by hand.'}`;
     } catch (e) {
       this.message = `Could not uninstall: ${(e as Error).message}`;
     }
@@ -535,6 +567,13 @@ class Helper {
       this.gameCard(),
       this.songCard(),
       h(
+        'p',
+        { class: 'hint' },
+        'In-game part by hand (any browser): ',
+        h('a', { href: `${import.meta.env.BASE_URL}etterna-offset-helper-ingame.zip`, download: '' }, 'etterna-offset-helper-ingame.zip'),
+        ' — extract it into the Etterna folder and follow its INSTALL.txt.',
+      ),
+      h(
         'details',
         { class: 'about' },
         h('summary', {}, 'How it works'),
@@ -570,7 +609,7 @@ class Helper {
   private watchLine(): HTMLElement {
     let text: string;
     let state = 'off';
-    if (!window.showDirectoryPicker) text = 'Needs Chrome or Edge (folder access).';
+    if (!window.showDirectoryPicker) text = 'This page needs Chrome or Edge (folder access). In Firefox or Zen, install the in-game part by hand: download the zip below.';
     else if (!this.folders.install) text = 'Choose the Etterna folder to start.';
     else if (!this.granted) text = 'Paused: the browser needs your OK to read the folders again.';
     else if (this.watch === 'missing') text = `Waiting for ${this.folders.nowPlayingFile?.name ?? 'nowplaying.txt'}: the theme writes it when a song starts.`;
@@ -647,7 +686,7 @@ class Helper {
   private gameCard(): HTMLElement | null {
     if (!this.folders.install || !this.granted) return null;
     const g = this.game;
-    const what = 'An Offset line above the banner on song select: Sync measures the selected song, Apply writes the offset and reloads the song, and hovering the result shows the sync map over the banner. This page does the measuring, so keep it open while you play.';
+    const what = 'An Offset line above the banner on song select: Sync measures the selected song, Apply writes the offset and reloads the song, and hovering the result shows the sync map over the banner. A small DLL does the measuring in game (Windows), so no browser is needed while you play.';
     const button = (label: string, onclick: () => void, primary = false) => h('button', { type: 'button', class: primary ? 'primary' : '', onclick }, label);
     const status =
       g.state === 'installed'
