@@ -1,5 +1,4 @@
-# Builds the site and publishes it to GitHub Pages on every push to main (and the luajit-probe
-# test version at /probe/).
+# Builds the site and publishes it to GitHub Pages on every push to main.
 name: Deploy to GitHub Pages
 
 on:
@@ -28,16 +27,6 @@ jobs:
       - run: npm ci
       - run: npm test
       - run: npm run build
-      # The luajit-probe branch (a test version), built next to it at /probe/ while the branch exists.
-      # Pushing to that branch does not deploy: run this workflow on main again (workflow_dispatch).
-      - name: Build the luajit-probe branch into /probe/
-        run: |
-          if git ls-remote --exit-code --heads origin luajit-probe; then
-            git fetch --depth=1 origin luajit-probe
-            git worktree add ../probe FETCH_HEAD
-            (cd ../probe && npm ci && npm test && npm run build)
-            cp -r ../probe/dist dist/probe
-          fi
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
