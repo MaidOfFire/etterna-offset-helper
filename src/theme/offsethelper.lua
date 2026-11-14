@@ -208,18 +208,21 @@ local function reloadSong()
 end
 
 -- The chart's whole beats from beat 0 to past `duration`, and its offset, from Etterna's own timing.
+-- GetElapsedTimeFromBeatNoOffset is the chart's timeline (beat 0 at -#OFFSET); "NoOffset" means
+-- without the player's global offset, which GetElapsedTimeFromBeat also subtracts (times the rate)
+-- and which has nothing to do with the chart's sync.
 local function chartBeats(song, duration)
 	local steps = GAMESTATE:GetCurrentSteps()
 	local timing = steps and steps:GetTimingData() or song:GetTimingData()
 	local beats = {}
 	for b = 0, 100000 do
-		local t = timing:GetElapsedTimeFromBeat(b)
+		local t = timing:GetElapsedTimeFromBeatNoOffset(b)
 		if t > duration + 0.2 then
 			break
 		end
 		beats[#beats + 1] = t
 	end
-	return beats, timing:GetElapsedTimeFromBeatNoOffset(0) - timing:GetElapsedTimeFromBeat(0)
+	return beats, -timing:GetElapsedTimeFromBeatNoOffset(0)
 end
 
 -- Where a file Etterna names (/Songs/..., /AdditionalSongs/...) can be on disk: Etterna's folder,

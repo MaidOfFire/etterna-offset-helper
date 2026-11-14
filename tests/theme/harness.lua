@@ -230,9 +230,11 @@ package.preload.ffi = function() return fakeFfi end
 jit = {os = "Windows", arch = "x64", version = "LuaJIT 2.1", status = function() return true end}
 GAMESTATE.GetCurrentSteps = function()
 	return {GetTimingData = function()
+		-- As Etterna's: NoOffset is the chart's timeline (beat 0 at -#OFFSET); the other one also
+		-- subtracts the player's global offset (here -0.015470) times the rate.
 		return {
-			GetElapsedTimeFromBeat = function(_, b) return b * 60 / 145 + 0.453 end,
-			GetElapsedTimeFromBeatNoOffset = function(_, b) return b * 60 / 145 end
+			GetElapsedTimeFromBeat = function(_, b) return b * 60 / 145 + 0.453 + 0.015470 end,
+			GetElapsedTimeFromBeatNoOffset = function(_, b) return b * 60 / 145 + 0.453 end
 		}
 	end}
 end
