@@ -523,7 +523,13 @@ class Helper {
     const tag = rec && (rec.choices.length > 1 ? '?' : ms(-rec.choices[0].shiftMs));
     document.title = tag && s?.title ? `${tag} · ${s.title} — Etterna offset helper` : 'Etterna offset helper';
     const parts: (HTMLElement | null)[] = [
-      h('header', {}, h('h1', {}, 'Etterna offset helper'), this.watchLine()),
+      h(
+        'header',
+        {},
+        h('h1', {}, 'Etterna offset helper ', h('span', { class: 'test-tag' }, 'test version: LuaJIT probe')),
+        h('p', { class: 'hint' }, 'Same as the helper, plus a probe in the in-game part that reports what this Etterna’s Lua can do (see the In game card after Update and one Etterna start).'),
+        this.watchLine(),
+      ),
       this.message ? h('p', { class: 'notice' }, this.message) : null,
       this.foldersCard(),
       this.gameCard(),

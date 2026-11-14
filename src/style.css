@@ -287,3 +287,13 @@ button.link {
   color: var(--accent);
   text-decoration: underline;
 }
+
+.test-tag {
+  font-size: 12px;
+  font-weight: 500;
+  color: #1e1e1e;
+  background: var(--warn);
+  border-radius: 4px;
+  padding: 2px 6px;
+  vertical-align: middle;
+}
