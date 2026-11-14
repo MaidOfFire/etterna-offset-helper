@@ -7,7 +7,7 @@
 
 #include "offsethelper.h"
 
-static unsigned char *slurp(const char *path, int *size) {
+static unsigned char *unused_slurp(const char *path, int *size) {
   FILE *f = fopen(path, "rb");
   if (!f) return NULL;
   fseek(f, 0, SEEK_END);
@@ -29,11 +29,7 @@ int main(int argc, char **argv) {
     else if (!strcmp(argv[i], "--offset")) offset = atof(argv[i + 1]);
     else if (!strcmp(argv[i], "--bmp")) bmpPath = argv[i + 1];
   }
-  int size;
-  unsigned char *data = slurp(argv[1], &size);
-  if (!data) return fprintf(stderr, "cannot read %s\n", argv[1]), 1;
-  OhSong *song = oh_decode(data, size);
-  free(data);
+  OhSong *song = oh_decode_file(argv[1]);
   if (oh_error(song)) return fprintf(stderr, "decode: %s\n", oh_error(song)), 1;
   int count;
   const float *samples = oh_samples(song, &count);
@@ -59,12 +55,8 @@ int main(int argc, char **argv) {
     free(beats);
   }
   if (bmpPath) {
-    const unsigned char *bmp;
-    int n = oh_map_bmp(song, 768, 240, &bmp);
-    FILE *f = fopen(bmpPath, "wb");
-    fwrite(bmp, 1, n, f);
-    fclose(f);
-    printf("bmp=%d bytes range=%d\n", n, oh_map_range(song));
+    if (oh_map_bmp_file(song, 768, 240, bmpPath)) return fprintf(stderr, "cannot write %s\n", bmpPath), 1;
+    printf("bmp written, range=%d\n", oh_map_range(song));
   }
   oh_free(song);
   return 0;

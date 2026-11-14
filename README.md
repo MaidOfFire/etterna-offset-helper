@@ -36,8 +36,8 @@ kept in `OffsetHelper/backup/`, and Uninstall takes the line and the file out ag
 Etterna after installing.
 
 The measuring runs in game: `OffsetHelper/offsethelper.dll` (Windows), loaded through LuaJIT's
-FFI, decodes the selected song the way Etterna plays it and measures it exactly as this page does,
-so no browser is needed while you play. The theme reads the music through Etterna's own files and
+FFI, opens the selected song's music (Etterna's Lua cannot pass binary data) and decodes it the way Etterna plays it, measuring it exactly as this page does,
+so no browser is needed while you play. The theme finds the music on disk (Etterna's folder, or the extra song folders in its Preferences.ini) and
 takes the beat times from Etterna's timing data, writes `#OFFSET` itself and keeps the original
 for Undo. Without the DLL (or its FFI), the line asks this page instead, which must then be open:
 the two talk through `OffsetHelper/request.txt` and `OffsetHelper/result.txt` plus `map-*.png`.

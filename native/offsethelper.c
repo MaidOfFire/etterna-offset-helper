@@ -9,8 +9,12 @@
 #include "offsethelper.h"
 
 #include <math.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -210,10 +214,10 @@ static int fix_near(const OhSong *s, const double *beats, int n, double nearMs, 
       if (!isnan(points[i].offset)) clear[nc++] = points[i].offset;
     int nk = 0;
     for (int i = 0; i < nc; ++i) {
-      double near[5];
+      double around[5];
       int nn = 0;
-      for (int j = i - 2 < 0 ? 0 : i - 2; j < nc && j < i + 3; ++j) near[nn++] = clear[j];
-      if (fabs(clear[i] - median(near, nn)) <= 8) kept[nk++] = clear[i];
+      for (int j = i - 2 < 0 ? 0 : i - 2; j < nc && j < i + 3; ++j) around[nn++] = clear[j];
+      if (fabs(clear[i] - median(around, nn)) <= 8) kept[nk++] = clear[i];
     }
     if (nk >= 4) {
       double typical = median(kept, nk); /* sorts kept */
@@ -395,8 +399,8 @@ int oh_map_bmp(OhSong *s, int w, int h, const unsigned char **bytes) {
 #define Y_OF(ms) (h / 2.0 - (ms) / (double)range * (h / 2.0))
   int thin = scale < 1 ? 1 : (int)lround(scale);
   /* Reference lines, then the chart's beats now. */
-  static const int near[] = {-30, -10, 10, 30}, far[] = {-75, -50, -25, 25, 50, 75};
-  const int *lines = range == 60 ? near : far;
+  static const int narrowLines[] = {-30, -10, 10, 30}, wideLines[] = {-75, -50, -25, 25, 50, 75};
+  const int *lines = range == 60 ? narrowLines : wideLines;
   int nl = range == 60 ? 4 : 6;
   for (int l = 0; l < nl; ++l)
     for (int y = (int)Y_OF(lines[l]), d = 0; d < thin; ++d)
@@ -476,6 +480,46 @@ OhSong *oh_decode(const unsigned char *data, int size) {
   s->count = out.count;
   if (!s->error && !sharp_onsets(s)) s->error = "out of memory";
   return s;
+}
+
+/* A file by a UTF-8 path (Windows paths in Etterna may hold any characters). */
+static FILE *open_utf8(const char *path, const char *mode) {
+#ifdef _WIN32
+  wchar_t wpath[4096], wmode[8];
+  if (!MultiByteToWideChar(CP_UTF8, 0, path, -1, wpath, 4096) || !MultiByteToWideChar(CP_UTF8, 0, mode, -1, wmode, 8)) return NULL;
+  return _wfopen(wpath, wmode);
+#else
+  return fopen(path, mode);
+#endif
+}
+
+OhSong *oh_decode_file(const char *path) {
+  FILE *f = open_utf8(path, "rb");
+  if (!f) {
+    OhSong *s = (OhSong *)calloc(1, sizeof(OhSong));
+    if (s) s->error = "cannot open the music file";
+    return s;
+  }
+  fseek(f, 0, SEEK_END);
+  long n = ftell(f);
+  fseek(f, 0, SEEK_SET);
+  unsigned char *data = (unsigned char *)malloc(n > 0 ? (size_t)n : 1);
+  size_t got = data ? fread(data, 1, (size_t)n, f) : 0;
+  fclose(f);
+  OhSong *s = data ? oh_decode(data, (int)got) : NULL;
+  free(data);
+  return s;
+}
+
+int oh_map_bmp_file(OhSong *s, int width, int height, const char *path) {
+  const unsigned char *bytes;
+  int n = oh_map_bmp(s, width, height, &bytes);
+  if (n <= 0) return -1;
+  FILE *f = open_utf8(path, "wb");
+  if (!f) return -1;
+  size_t wrote = fwrite(bytes, 1, (size_t)n, f);
+  fclose(f);
+  return wrote == (size_t)n ? 0 : -1;
 }
 
 const char *oh_error(const OhSong *s) { return s ? s->error : "out of memory"; }

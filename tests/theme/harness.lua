@@ -200,16 +200,17 @@ files[SM] = ORIGINAL
 files["/AdditionalSongs/Solo Pack/Zoltraak/audio.mp3"] = "MUSIC"
 FILEMAN.GetDirListing = function(_, pattern) return string.find(pattern, "%.sm$") and {SM} or {} end
 local TRUE_OFFSET = -0.438235
-local measured = {}
+local measured, decodedPaths, mapFiles = {}, {}, {}
+files["/Save/Preferences.ini"] = "[Options]\r\nAdditionalSongFolders=E:\\Games\\Etterna\\Songs_solo, D:\\Games\\common song folder\\\r\nGlobalOffsetSeconds=0\r\n"
 local fakeLib = {
-	oh_decode = function(data, size) return {data = data, size = size} end,
-	oh_error = function() return nil end,
+	oh_decode_file = function(path) decodedPaths[#decodedPaths + 1] = path return path == "D:\\Games\\common song folder\\Solo Pack\\Zoltraak\\audio.mp3" and {} or {error = "cannot open the music file"} end,
+	oh_error = function(song) return song.error end,
 	oh_duration = function() return 10 end,
 	oh_measure = function(song, beats, count, offset) measured[#measured + 1] = {count = count, first = beats.t[1], offset = offset} song.shift = (offset - TRUE_OFFSET) * 1000 return 0 end,
 	oh_choice_count = function() return 1 end,
 	oh_choice_offset = function() return TRUE_OFFSET end,
 	oh_choice_shift = function(song) return song.shift end,
-	oh_map_bmp = function(_, w, h, bytes) bytes[0] = "BM" .. w .. "x" .. h return #bytes[0] end,
+	oh_map_bmp_file = function(_, w, h, path) mapFiles[#mapFiles + 1] = path return 0 end,
 	oh_map_range = function() return 60 end,
 	oh_free = function() end
 }
@@ -249,7 +250,8 @@ check("dll: loaded from Etterna's folder", loadedFrom ~= nil, loadedFrom)
 check("dll: no request to the page", files["/OffsetHelper/request.txt"] == nil)
 check("dll: measured with the chart's offset and beats to the end", measured[1] and math.abs(measured[1].offset + 0.453) < 1e-9 and measured[1].count == 24 and math.abs(measured[1].first - 0.453) < 1e-9, measured[1] and (measured[1].offset .. " " .. measured[1].count))
 check("dll: shows the result", text("Info") == "+14.8 ms -> -0.438235" and text("B1") == "Apply", text("Info"))
-check("dll: writes the map", map.texture == "/OffsetHelper/map-native-1.bmp" and files[map.texture] == "BM768x240", map.texture)
+check("dll: opens the music in the extra song folders, in order", decodedPaths[1] == "E:\\Games\\Etterna\\Songs_solo\\Solo Pack\\Zoltraak\\audio.mp3" and decodedPaths[2] == "D:\\Games\\common song folder\\Solo Pack\\Zoltraak\\audio.mp3", table.concat(decodedPaths, " | "))
+check("dll: has the map written in Etterna's folder", map.texture == "/OffsetHelper/map-native-1.bmp" and mapFiles[1] == "E:\\Games\\Etterna\\Program\\..\\OffsetHelper\\map-native-1.bmp", mapFiles[1])
 point("Info")
 tick()
 local labels = root:GetChild("OffsetHelperLabels")

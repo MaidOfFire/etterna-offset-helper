@@ -72,8 +72,11 @@ local function probe()
 	File.Write(DIR .. "probe.txt", table.concat(lines, "\n") .. "\n")
 end
 
--- The native part (native/offsethelper.c): loaded once, from OffsetHelper in Etterna's folder.
-local ffi, lib, nativeError
+-- The native part (native/offsethelper.c): loaded once, from OffsetHelper in Etterna's folder,
+-- which is remembered (root) to turn Etterna's paths into Windows ones. Etterna's Lua cannot pass
+-- binary data (its file reads stop at the first zero byte), so the DLL opens the music and writes
+-- the map picture itself.
+local ffi, lib, root, nativeError
 local function loadNative()
 	if lib or nativeError then
 		return lib
@@ -86,7 +89,7 @@ local function loadNative()
 	end
 	pcall(ffi.cdef, [[
 		typedef struct OhSong OhSong;
-		OhSong *oh_decode(const char *data, int size);
+		OhSong *oh_decode_file(const char *path);
 		const char *oh_error(const OhSong *song);
 		double oh_duration(const OhSong *song);
 		int oh_measure(OhSong *song, const double *beats, int count, double offset);
@@ -94,8 +97,8 @@ local function loadNative()
 		double oh_choice_offset(const OhSong *song, int i);
 		double oh_choice_shift(const OhSong *song, int i);
 		double oh_choice_strength(const OhSong *song, int i);
-		int oh_map_bmp(OhSong *song, int width, int height, const unsigned char **bytes);
 		int oh_map_range(const OhSong *song);
+		int oh_map_bmp_file(OhSong *song, int width, int height, const char *path);
 		void oh_free(OhSong *song);
 		unsigned long GetModuleFileNameA(void *module, char *buffer, unsigned long size);
 		unsigned long GetCurrentDirectoryA(unsigned long size, char *buffer);
@@ -113,7 +116,7 @@ local function loadNative()
 			local path = dir .. "\\OffsetHelper\\" .. name
 			local ok, loaded = pcall(ffi.load, path)
 			if ok then
-				lib = loaded
+				lib, root = loaded, dir
 				return lib
 			end
 			tried[#tried + 1] = path
@@ -205,6 +208,26 @@ local function chartBeats(song, duration)
 	return beats, timing:GetElapsedTimeFromBeatNoOffset(0) - timing:GetElapsedTimeFromBeat(0)
 end
 
+-- Where a file Etterna names (/Songs/..., /AdditionalSongs/...) can be on disk: Etterna's folder,
+-- or for /AdditionalSongs each of the extra song folders in its Preferences.ini.
+local function diskPaths(path)
+	local rest = string.gsub(string.gsub(path, "^/+", ""), "/", "\\")
+	local inExtra = string.match(rest, "^[Aa]dditional[Ss]ongs\\(.*)$")
+	if not inExtra then
+		return {root .. "\\" .. rest}
+	end
+	local paths = {}
+	local prefs = File.Read("/Save/Preferences.ini") or ""
+	local folders = string.match(prefs, "AdditionalSongFolders=([^\r\n]*)") or ""
+	for entry in string.gmatch(folders, "[^,]+") do
+		local folder = string.gsub(string.gsub(entry, "^%s+", ""), "[%s\\/]+$", "")
+		if folder ~= "" then
+			paths[#paths + 1] = folder .. "\\" .. inExtra
+		end
+	end
+	return paths
+end
+
 local mapCount = 0
 -- The DLL's measurement as what the line shows: choices, and the sync map written as a BMP.
 local function nativeResult(dir, song)
@@ -215,29 +238,35 @@ local function nativeResult(dir, song)
 	end
 	result.sure = #result.choices == 1
 	result.inSync = result.sure and math.abs(result.choices[1].shift) < 2
-	local bytes = ffi.new("const unsigned char*[1]")
-	local size = lib.oh_map_bmp(native.song, 768, 240, bytes)
-	if size > 0 then
-		mapCount = mapCount + 1
-		local path = DIR .. "map-native-" .. mapCount .. ".bmp"
-		if File.Write(path, ffi.string(bytes[0], size)) then
-			FILEMAN:FlushDirCache(DIR)
-			mapPath = path
-			result.mapRange = lib.oh_map_range(native.song)
-		end
+	mapCount = mapCount + 1
+	local name = "map-native-" .. mapCount .. ".bmp"
+	if lib.oh_map_bmp_file(native.song, 768, 240, root .. "\\OffsetHelper\\" .. name) == 0 then
+		FILEMAN:FlushDirCache(DIR)
+		mapPath = DIR .. name
+		result.mapRange = lib.oh_map_range(native.song)
 	end
 	return result
 end
 
 local function nativeMeasure(song)
-	local data = File.Read(song:GetMusicPath())
-	if not data then
-		return {dir = song:GetSongDir(), status = "error", text = "could not read the music file"}
+	local decoded, err
+	local paths = diskPaths(song:GetMusicPath())
+	for _, path in ipairs(paths) do
+		decoded = ffi.gc(lib.oh_decode_file(path), lib.oh_free)
+		err = lib.oh_error(decoded)
+		err = err ~= nil and ffi.string(err) or nil
+		if not (err and string.find(err, "cannot open", 1, true)) then
+			break
+		end
 	end
-	local decoded = ffi.gc(lib.oh_decode(data, #data), lib.oh_free)
-	local err = lib.oh_error(decoded)
-	if err ~= nil then
-		return {dir = song:GetSongDir(), status = "error", text = ffi.string(err)}
+	if #paths == 0 then
+		err = "no extra song folders in Save/Preferences.ini"
+	end
+	if err then
+		if string.find(err, "cannot open", 1, true) then
+			err = err .. " (" .. table.concat(paths, ", ") .. ")"
+		end
+		return {dir = song:GetSongDir(), status = "error", text = err}
 	end
 	local beats, offset = chartBeats(song, lib.oh_duration(decoded))
 	native = {dir = song:GetSongDir(), song = decoded, beats = beats, offset = offset}
