@@ -1,5 +1,4 @@
-# Builds the site and publishes it to GitHub Pages on every push to main (and the addon-host
-# test version at /host/).
+# Builds the site and publishes it to GitHub Pages on every push to main.
 name: Deploy to GitHub Pages
 
 on:
@@ -28,16 +27,6 @@ jobs:
       - run: npm ci
       - run: npm test
       - run: npm run build
-      # The addon-host branch (a test version), built next to it at /host/ while the branch exists.
-      # Pushing to that branch does not deploy: run this workflow on main again (workflow_dispatch).
-      - name: Build the addon-host branch into /host/
-        run: |
-          if git ls-remote --exit-code --heads origin addon-host; then
-            git fetch --depth=1 origin addon-host
-            git worktree add ../host FETCH_HEAD
-            (cd ../host && npm ci && npm test && npm run build)
-            cp -r ../host/dist dist/host
-          fi
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
