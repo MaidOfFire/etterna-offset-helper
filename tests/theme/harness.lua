@@ -114,6 +114,16 @@ local function answer(t) files["/OffsetHelper/result.txt"] = t end
 
 check("starts with the Sync button", text("Label") == "Offset:" and text("Sync") == "Sync" and text("Info") == "", text("Info"))
 check("Sync sits after the label", line:GetChild("Sync").px > line:GetChild("Label").px)
+-- Til' Death's other tabs cover the line's place: it hides there and takes no clicks.
+local tab = 0
+function getTabIndex() return tab end
+tab = 2
+root:playcommand("TabChangedMessage")
+check("hidden on Til' Death's other tabs", line.shown == false)
+check("no clicks while hidden", click("Sync") == false and files["/OffsetHelper/request.txt"] == nil)
+tab = 0
+root:playcommand("TabChangedMessage")
+check("back on the General tab", line.shown == true)
 check("clicking elsewhere does nothing", (function() mouse.x, mouse.y = 500, 400 return callback({type = "InputEventType_FirstPress", DeviceInput = {button = "DeviceButton_left mouse button"}}) end)() == false)
 
 check("clicking Sync asks the page", click("Sync") == true and request().action == "measure" and request().dir == "/AdditionalSongs/Solo Pack/Zoltraak/")

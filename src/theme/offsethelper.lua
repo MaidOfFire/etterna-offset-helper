@@ -576,6 +576,13 @@ local function placeMap(root)
 	end
 end
 
+-- Til' Death draws its other tabs (scores, MSD, search, profile, ...) over the place where the
+-- line and the map go, so they show only on its General tab. Rebirth's line is in its header,
+-- which every page keeps.
+local function onGeneralTab()
+	return REBIRTH or getTabIndex == nil or getTabIndex() == 0
+end
+
 local t =
 	Def.ActorFrame {
 	InitCommand = function(self)
@@ -591,7 +598,7 @@ local t =
 		if screen and screen.AddInputCallback then
 			screen:AddInputCallback(
 				function(event)
-					if event.type ~= "InputEventType_FirstPress" or event.DeviceInput.button ~= "DeviceButton_left mouse button" then
+					if event.type ~= "InputEventType_FirstPress" or event.DeviceInput.button ~= "DeviceButton_left mouse button" or not self:GetVisible() then
 						return false
 					end
 					for _, name in ipairs(BUTTONS) do
@@ -610,11 +617,11 @@ local t =
 				-- Buttons light up under the mouse; the sync map shows while the result is hovered.
 				for _, name in ipairs(BUTTONS) do
 					local a = self:GetChild(name)
-					a:diffusealpha((actions[name] and over(a)) and 0.6 or 1)
+					a:diffusealpha((actions[name] and self:GetVisible() and over(a)) and 0.6 or 1)
 				end
 				local map = self:GetParent():GetChild("OffsetHelperMap")
 				if map then
-					local visible = mapPath ~= nil and shown ~= nil and shown.dir == songDir() and over(self:GetChild("Info"))
+					local visible = mapPath ~= nil and shown ~= nil and shown.dir == songDir() and self:GetVisible() and over(self:GetChild("Info"))
 					if visible then
 						placeMap(self:GetParent())
 					end
@@ -645,9 +652,12 @@ local t =
 			work()
 		end
 	end,
+	TabChangedMessageCommand = function(self)
+		self:playcommand("Show")
+	end,
 	ShowCommand = function(self)
 		local dir = songDir()
-		self:visible(dir ~= nil)
+		self:visible(dir ~= nil and onGeneralTab())
 		if dir == nil then
 			return
 		end
