@@ -295,5 +295,31 @@ local doubles = false
 for _, v in ipairs(freed) do if count(freed, v) > 1 then doubles = true end end
 check("session: nothing freed twice", not doubles, table.concat(freed, ","))
 
+-- Rebirth: a screen 720 high, the line right-aligned in the header, the map over the banner of
+-- its song box wherever the box is (here moved to the left, as with the wheel on the right).
+THEME = {GetCurThemeName = function() return "Rebirth" end}
+SCREEN_WIDTH, SCREEN_HEIGHT = 1280, 720
+local rightFrame = build(Def.ActorFrame {Name = "RightFrame", Def.ActorFrame {Name = "CurSongBoxFile", Def.ActorFrame {Name = "Frame"}}})
+rightFrame:x(-760)
+rightFrame:GetChild("CurSongBoxFile"):GetChild("Frame"):xy(760, 72)
+screen.GetChild = function(_, name) return name == "RightFrame" and rightFrame or nil end
+currentSong = song
+root = build(dofile("src/theme/offsethelper.lua"))
+init(root)
+root:playcommand("On")
+line = root.children[3]
+map = root:GetChild("OffsetHelperMap")
+click("Sync")
+check("rebirth: measures", text("Info") == "+14.8 ms -> -0.438235" and text("B1") == "Apply", text("Info"))
+local last = line:GetChild("B1")
+local rightEnd = last:GetTrueX() + last:GetZoomedWidth()
+check("rebirth: the line ends where the header's icons end", math.abs(rightEnd - (1280 - 1280 * 38 / 1920)) < 1e-6 and math.abs(line:GetTrueY() - 60) < 1e-6, rightEnd .. " " .. line:GetTrueY())
+check("rebirth: text sized for 720", line:GetChild("Sync").z == 0.55)
+point("Info")
+tick()
+labels = root:GetChild("OffsetHelperLabels")
+check("rebirth: the map covers the song box's banner", map.shown and map.px == 0 and map.py == 72 and math.abs(map.w - 520) < 1e-6 and math.abs(map.h - 162) < 1e-6 and labels.px == 0 and labels.py == 72, map.px .. "," .. map.py .. " " .. map.w .. "x" .. map.h)
+THEME, SCREEN_WIDTH, SCREEN_HEIGHT = nil, nil, nil
+
 print(failures == 0 and "all passed" or (failures .. " failed"))
 os.exit(failures == 0 and 0 or 1)

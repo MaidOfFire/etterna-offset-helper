@@ -43,4 +43,21 @@ describe('talking to the in-game part', () => {
     expect(withoutLoadLine(withLoadLine(crlf)!)).toBe(crlf);
     expect(withLoadLine('return something_else')).toBeNull();
   });
+
+  it("loads the in-game part from Rebirth's song select overlay", () => {
+    // Rebirth's BGAnimations/ScreenSelectMusic overlay/default.lua, which ends without a newline.
+    const overlay = `local t = Def.ActorFrame {}
+
+t[#t+1] = LoadActor("../_mouse.lua")
+
+-- header
+t[#t+1] = LoadActorWithParams("../playerInfoFrame/main.lua", {visualizer = themeConfig:get_data().global.ShowVisualizer, screen = "ScreenSelectMusic"})
+updateDiscordStatusForMenus()
+updateNowPlaying()
+
+return t`;
+    const patched = withLoadLine(overlay)!;
+    expect(patched).toBe(overlay.replace('updateNowPlaying()\n', `updateNowPlaying()\n${LOAD_LINE}\n`));
+    expect(withoutLoadLine(patched)).toBe(overlay);
+  });
 });

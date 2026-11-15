@@ -287,3 +287,9 @@ button.link {
   color: var(--accent);
   text-decoration: underline;
 }
+
+.theme-row + .theme-row {
+  border-top: 1px solid var(--border);
+  margin-top: 12px;
+  padding-top: 4px;
+}

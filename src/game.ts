@@ -1,11 +1,11 @@
-// Talking to the in-game part (theme/offsethelper.lua, installed into Til' Death). Etterna's Lua
+// Talking to the in-game part (theme/offsethelper.lua, installed into Til' Death or Rebirth). Etterna's Lua
 // cannot read audio, so the page does the measuring: the theme writes OffsetHelper/request.txt
 // in the Etterna folder ("measure this song", "apply choice 2", "undo") and the page answers in
 // OffsetHelper/result.txt, with the sync map as a PNG next to it. Both are `key=value` lines.
 
 /** The folder in the Etterna folder that both sides use. */
 export const GAME_DIR = 'OffsetHelper';
-/** The line added to Til' Death's song select decorations to load the in-game part. */
+/** The line added to a theme's song select (Til' Death's decorations, Rebirth's overlay) to load the in-game part. */
 export const LOAD_LINE = 't[#t + 1] = LoadActor("offsethelper")';
 
 export interface GameRequest {
@@ -49,7 +49,7 @@ export function songPath(dir: string): { root: 'Songs' | 'AdditionalSongs'; pack
   return root ? { root, pack: parts[1], song: parts[2] } : null;
 }
 
-/** Til' Death's decorations with the in-game part loaded (before its `return t`), or null when it cannot be placed. */
+/** A song select file with the in-game part loaded (before its `return t`), or null when it cannot be placed. */
 export function withLoadLine(lua: string): string | null {
   if (lua.includes(LOAD_LINE)) return lua;
   const m = /\r?\n(\s*collectgarbage\(\)\s*\r?\n)?\s*return t\s*$/.exec(lua);
@@ -58,7 +58,7 @@ export function withLoadLine(lua: string): string | null {
   return lua.slice(0, m.index) + eol + LOAD_LINE + lua.slice(m.index);
 }
 
-/** The decorations without the in-game part. */
+/** The song select file without the in-game part. */
 export function withoutLoadLine(lua: string): string {
   return lua.replace(new RegExp(`\\r?\\n${LOAD_LINE.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`, 'g'), '');
 }

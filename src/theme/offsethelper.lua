@@ -1,20 +1,42 @@
 -- Etterna offset helper, in-game part: https://maidoffire.github.io/etterna-offset-helper/
 --
--- A line above the banner on song select. Sync measures the selected song's offset, Apply writes
--- the recommended one and reloads the song. Hovering the result shows the sync map over the
--- banner. The measuring is done by OffsetHelper/offsethelper.dat (or .dll), loaded through LuaJIT's FFI:
+-- A line on song select (Til' Death: above the banner, loaded from its decorations; Rebirth: in
+-- the header under its icons, loaded from its overlay, which is drawn above the header).
+-- Sync measures the selected song's offset, Apply writes the recommended one and reloads the song.
+-- Hovering the result shows the sync map over the banner. The measuring is done by OffsetHelper/offsethelper.dat (or .dll), loaded through LuaJIT's FFI:
 -- it decodes the music as Etterna plays it and measures it as the helper page does. Without the
 -- DLL, the helper page does it (open in Chrome or Edge): this file and the page then talk through
 -- OffsetHelper/request.txt and OffsetHelper/result.txt in the Etterna folder.
 --
--- Installed by the helper page (it also removes it again). To move the line, change X and Y.
+-- Installed by the helper page (it also removes it again). To move the line, change the layout below.
 
-local X, Y = 10, 50
-local MAP_X, MAP_Y = 10, 61
-local MAP_W = capWideScale(get43size(384), 384)
-local MAP_H = capWideScale(get43size(120), 120)
-local ZOOM = 0.4
-local GAP = 8
+-- Rebirth is made for a screen 720 high and has its banner on the right; Til' Death, and the
+-- layout used for any other theme, is made for 480.
+local function themeName()
+	local ok, name = pcall(function() return THEME:GetCurThemeName() end)
+	return ok and type(name) == "string" and name or ""
+end
+local REBIRTH = themeName():lower():find("rebirth") ~= nil
+local W = SCREEN_WIDTH or 854
+local H = SCREEN_HEIGHT or 480
+-- The line: its left end (X) or, when RIGHT is set, its right end; Y is its middle.
+local X, Y, RIGHT
+local MAP_X, MAP_Y, MAP_W, MAP_H
+local ZOOM, GAP
+if REBIRTH then
+	-- In the header's empty strip under its icons, ending where its exit icon ends.
+	RIGHT, Y = W - W * 38 / 1920, H * 90 / 1080
+	-- The banner, at the top of the song box (it moves with the box: see placeMap).
+	MAP_X, MAP_Y, MAP_W, MAP_H = W * 1140 / 1920, H * 109 / 1080, W * 780 / 1920, H * 243 / 1080
+	ZOOM, GAP = 0.55, 12
+else
+	local s = H / 480
+	X, Y = 10 * s, 50 * s
+	MAP_X, MAP_Y = 10 * s, 61 * s
+	MAP_W = capWideScale and capWideScale(get43size(384), 384) * s or 384 * s
+	MAP_H = capWideScale and capWideScale(get43size(120), 120) * s or 120 * s
+	ZOOM, GAP = 0.4 * s, 8 * s
+end
 -- Seconds to wait for the page to answer before saying it is not running.
 local TIMEOUT = 6
 local PAGE = "maidoffire.github.io/etterna-offset-helper"
@@ -134,8 +156,12 @@ local function loadNative()
 end
 
 local function mainColor(name, fallback)
-	if getMainColor then
-		return getMainColor(name)
+	-- Til' Death has a "positive" colour; Rebirth's colours have other names.
+	if getMainColor and not REBIRTH then
+		local ok, c = pcall(getMainColor, name)
+		if ok and c ~= nil then
+			return c
+		end
 	end
 	return color(fallback)
 end
@@ -533,11 +559,28 @@ local function piece(name, isButton)
 	}
 end
 
+-- Rebirth's banner moves with its song box (to the left with the wheel on the right, away while
+-- the profile pages are open), so the map follows the box's frame when there is one. Etterna
+-- moves a screen's decorations into the screen itself, so the box is a child of the screen.
+local function placeMap(root)
+	if not REBIRTH then
+		return
+	end
+	local box = SCREENMAN:GetTopScreen()
+	for _, name in ipairs({"RightFrame", "CurSongBoxFile", "Frame"}) do
+		box = box and box.GetChild and box:GetChild(name)
+	end
+	if box then
+		root:GetChild("OffsetHelperMap"):xy(box:GetTrueX(), box:GetTrueY())
+		root:GetChild("OffsetHelperLabels"):xy(box:GetTrueX(), box:GetTrueY())
+	end
+end
+
 local t =
 	Def.ActorFrame {
 	InitCommand = function(self)
 		frame = self
-		self:xy(X, Y)
+		self:xy(X or RIGHT, Y)
 	end,
 	OnCommand = function(self)
 		if not OFFSETHELPER_PROBED then
@@ -572,6 +615,9 @@ local t =
 				local map = self:GetParent():GetChild("OffsetHelperMap")
 				if map then
 					local visible = mapPath ~= nil and shown ~= nil and shown.dir == songDir() and over(self:GetChild("Info"))
+					if visible then
+						placeMap(self:GetParent())
+					end
 					map:visible(visible)
 					self:GetParent():GetChild("OffsetHelperLabels"):visible(visible and shown.mapRange ~= nil)
 				end
@@ -642,6 +688,9 @@ local t =
 				x = x + a:GetZoomedWidth() + GAP
 			end
 		end
+		if RIGHT then
+			self:x(RIGHT - (x - GAP))
+		end
 		self:GetChild("Info"):diffuse(s and s.status == "error" and color("#e06c6c") or color("#ffffff"))
 		local map = self:GetParent():GetChild("OffsetHelperMap")
 		if map and mapPath and map.loaded ~= mapPath then
@@ -660,7 +709,7 @@ local t =
 				label:visible(v ~= nil)
 				if v then
 					label:settext((v > 0 and "+" or "-") .. math.abs(v))
-					label:y(MAP_Y + MAP_H / 2 - v / range * (MAP_H / 2))
+					label:y(MAP_H / 2 - v / range * (MAP_H / 2))
 				end
 			end
 		end
@@ -678,12 +727,12 @@ for _, name in ipairs(pieces) do
 end
 
 -- The sync map, over the banner while the result is hovered, with its ms labels.
-local labels = Def.ActorFrame {Name = "OffsetHelperLabels", InitCommand = function(self) self:visible(false) end}
+local labels = Def.ActorFrame {Name = "OffsetHelperLabels", InitCommand = function(self) self:xy(MAP_X, MAP_Y):visible(false) end}
 for i = 1, 6 do
 	labels[#labels + 1] = LoadFont("Common Normal") .. {
 		Name = "L" .. i,
 		InitCommand = function(self)
-			self:x(MAP_X + 3):halign(0):valign(0.5):zoom(0.3):diffuse(color("#ffffff")):diffusealpha(0.6)
+			self:x(3 * H / 480):halign(0):valign(0.5):zoom(0.3 * H / 480):diffuse(color("#ffffff")):diffusealpha(0.6)
 		end
 	}
 end
