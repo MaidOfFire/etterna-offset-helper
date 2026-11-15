@@ -276,6 +276,55 @@ check("dll: the map again with the new offset", measured[2] and math.abs(measure
 click("B1")
 check("dll: Undo puts the file back", files[SM] == ORIGINAL)
 check("dll: Undo reloads and says so", reloads == 2 and text("Info") == "restored -0.453000" and text("B1") == "", text("Info"))
+-- An Apply is remembered: after another song, and after Etterna restarts, the line still says
+-- so and Undo puts the file's own offset back.
+click("Sync")
+click("B1")
+check("remembered: written to synced.txt", files["/OffsetHelper/synced.txt"] == "/AdditionalSongs/Solo Pack/Zoltraak/\t-0.438235\t-0.453\n", files["/OffsetHelper/synced.txt"])
+local other = {GetSongDir = function() return "/Songs/Other/Song/" end, GetSongFilePath = song.GetSongFilePath, GetMusicPath = song.GetMusicPath}
+currentSong = other
+root:playcommand("CurrentSongChangedMessage")
+currentSong = song
+root:playcommand("CurrentSongChangedMessage")
+check("remembered: shown again with Undo after another song", text("Info") == "applied -0.438235" and text("B1") == "Undo", text("Info"))
+local function restart()
+	OFFSETHELPER_SESSION.synced = nil
+	root = build(dofile("src/theme/offsethelper.lua"))
+	init(root)
+	root:playcommand("On")
+	line = root.children[3]
+	map = root:GetChild("OffsetHelperMap")
+end
+restart()
+check("remembered: shown after a restart", text("Info") == "applied -0.438235" and text("B1") == "Undo", text("Info"))
+point("Info")
+tick()
+check("remembered: no map without a measurement", map.shown == false)
+mouse.x = -100
+reloads = 0
+click("B1")
+check("remembered: Undo puts the file back as it was", files[SM] == ORIGINAL, files[SM])
+check("remembered: Undo reloads, says so and forgets it", reloads == 1 and text("Info") == "restored -0.453" and files["/OffsetHelper/synced.txt"] == "", text("Info"))
+click("Sync")
+click("B1")
+files[SM] = string.gsub(ORIGINAL, "%-0%.453", "-0.4")
+click("B1")
+check("undo: an offset changed since is left alone", files[SM] == string.gsub(ORIGINAL, "%-0%.453", "-0.4") and string.find(text("Info"), "changed", 1, true) ~= nil and files["/OffsetHelper/synced.txt"] == "", text("Info"))
+files[SM] = ORIGINAL
+click("Sync")
+click("B1")
+files[SM] = string.gsub(ORIGINAL, "%-0%.453", "-0.4")
+restart()
+click("B1")
+check("remembered: an offset changed since is left alone", files[SM] == string.gsub(ORIGINAL, "%-0%.453", "-0.4") and string.find(text("Info"), "changed", 1, true) ~= nil and files["/OffsetHelper/synced.txt"] == "", text("Info"))
+files[SM] = ORIGINAL
+click("Sync")
+click("B1")
+click("Sync")
+check("remembered: synced again, Undo next to Apply", text("B1") == "Apply" and text("B2") == "Undo", text("B2"))
+click("B2")
+check("remembered: that Undo puts the first offset back", files[SM] == ORIGINAL, files[SM])
+
 click("Sync")
 files[SM] = string.gsub(ORIGINAL, "%-0%.453", "-0.5")
 click("B1")

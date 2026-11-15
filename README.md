@@ -6,7 +6,7 @@ Measures how far a song's `#OFFSET` is off and fixes it, right in Etterna's song
 
 ## In game (Til' Death or Rebirth, Windows)
 
-The helper adds an Offset line to song select (above the banner in Til' Death, in the header in Rebirth). **Sync** measures the selected song, and **Apply** writes the fix and reloads the song. **Undo** puts the old offset back. Hover over the result to see the sync map. No browser is needed while you play.
+The helper adds an Offset line to song select (above the banner in Til' Death, in the header in Rebirth). **Sync** measures the selected song, and **Apply** writes the fix and reloads the song. **Undo** puts the old offset back, even after you select another song or restart Etterna. Hover over the result to see the sync map. No browser is needed while you play.
 
 ### Install with Chrome or Edge
 

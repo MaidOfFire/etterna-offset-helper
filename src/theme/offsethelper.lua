@@ -181,6 +181,8 @@ end
 -- What is shown for the selected song: { dir, status, text, choices = { {offset, change}, ... }, map, applied }.
 local shown
 local mapPath
+-- Defined further down (they need the simfile helpers): remembering what Apply changed.
+local fileOffset, remember, forget
 
 local function parse(text)
 	local fields = {}
@@ -219,7 +221,7 @@ local function send(action, choice)
 		frame:playcommand("Show")
 		return
 	end
-	pending = {id = id, action = action, dir = song:GetSongDir(), since = GetTimeSinceStart()}
+	pending = {id = id, action = action, dir = song:GetSongDir(), since = GetTimeSinceStart(), before = action == "apply" and fileOffset(song) or nil}
 	shown = shown and shown.dir == pending.dir and shown or {dir = pending.dir}
 	shown.status = "working"
 	shown.text = action == "measure" and "measuring..." or action == "apply" and "applying..." or "undoing..."
@@ -287,6 +289,7 @@ local function nativeResult(dir, song)
 	if lib.oh_map_bmp_file(native.song, 768, 240, root .. "\\OffsetHelper\\" .. name) == 0 then
 		FILEMAN:FlushDirCache(DIR)
 		mapPath = DIR .. name
+		result.map = mapPath
 		result.mapRange = lib.oh_map_range(native.song)
 	end
 	return result
@@ -342,7 +345,9 @@ local function simfiles(song)
 end
 
 -- A simfile with its #OFFSET set to `offset` (only those digits change; chart offsets that equal
--- the song's move with it), and the song's offset before; nil when it has none. As offsetFile.ts.
+-- the song's move with it), the song's offset before, and that offset as written in the file; nil
+-- when it has none. As offsetFile.ts. A string offset is written as it is (Undo puts back the
+-- file's own digits).
 local function withOffset(text, offset)
 	local tags, pos = {}, 1
 	while true do
@@ -356,7 +361,7 @@ local function withOffset(text, offset)
 		end
 		local number = tonumber((string.gsub(value, "^%s*(.-)%s*$", "%1")))
 		if number and not string.find(string.sub(text, lineStart, a - 1), "//", 1, true) then
-			tags[#tags + 1] = {from = string.find(text, ":", a, true) + 1, to = b - 1, value = number}
+			tags[#tags + 1] = {from = string.find(text, ":", a, true) + 1, to = b - 1, value = number, raw = (string.gsub(value, "^%s*(.-)%s*$", "%1"))}
 		end
 		pos = b + 1
 	end
@@ -367,12 +372,74 @@ local function withOffset(text, offset)
 	for i, tag in ipairs(tags) do
 		if i == 1 or math.abs(tag.value - old) < 1e-7 then
 			parts[#parts + 1] = string.sub(text, at, tag.from - 1)
-			parts[#parts + 1] = string.format("%.6f", offset)
+			parts[#parts + 1] = type(offset) == "string" and offset or string.format("%.6f", offset)
 			at = tag.to + 1
 		end
 	end
 	parts[#parts + 1] = string.sub(text, at)
-	return table.concat(parts), old
+	return table.concat(parts), old, tags[1].raw
+end
+
+-- The song's offset as written in its first simfile that has one, or nil.
+function fileOffset(song)
+	local ok, raw =
+		pcall(
+		function()
+			for _, path in ipairs(simfiles(song)) do
+				local text = File.Read(path)
+				local _, _, raw = withOffset(text or "", 0)
+				if raw then
+					return raw
+				end
+			end
+		end
+	)
+	return ok and raw or nil
+end
+
+-- Songs whose offset Apply changed: dir -> {applied, before}, kept in OffsetHelper/synced.txt (a
+-- line per song: its folder, the offset applied and the one before, tab-separated), so that the
+-- line shows them with Undo after another song was selected or Etterna was restarted.
+local SYNCED = DIR .. "synced.txt"
+local function synced()
+	if not session.synced then
+		local list = {}
+		local ok, text = pcall(File.Read, SYNCED)
+		for line in string.gmatch(ok and text or "", "[^\r\n]+") do
+			local dir, applied, before = string.match(line, "^([^\t]+)\t([^\t]+)\t([^\t]+)$")
+			if dir then
+				list[dir] = {applied = applied, before = before}
+			end
+		end
+		session.synced = list
+	end
+	return session.synced
+end
+local function saveSynced()
+	local lines = {}
+	for dir, e in pairs(synced()) do
+		lines[#lines + 1] = dir .. "\t" .. e.applied .. "\t" .. e.before
+	end
+	table.sort(lines)
+	File.Write(SYNCED, table.concat(lines, "\n") .. (#lines > 0 and "\n" or ""))
+end
+function remember(dir, applied, before)
+	local list = synced()
+	local old = list[dir]
+	-- Applied again over the offset the helper wrote: Undo still goes back to the one before that.
+	if old and before and tonumber(before) and math.abs(tonumber(before) - tonumber(old.applied)) < 5e-7 then
+		before = old.before
+	end
+	if before and applied then
+		list[dir] = {applied = applied, before = before}
+		saveSynced()
+	end
+end
+function forget(dir)
+	if synced()[dir] then
+		synced()[dir] = nil
+		saveSynced()
+	end
 end
 
 local function nativeApply(song, choice)
@@ -423,8 +490,17 @@ local function nativeUndo(song)
 	if not shown or not shown.undo then
 		return shown
 	end
+	-- Only files that still have the offset applied go back (one changed meanwhile stays).
+	local restored = 0
 	for _, file in ipairs(shown.undo) do
-		File.Write(file.path, file.text)
+		local _, now = withOffset(File.Read(file.path) or "", 0)
+		if now and math.abs(now - tonumber(shown.applied)) < 5e-7 and File.Write(file.path, file.text) then
+			restored = restored + 1
+		end
+	end
+	if restored == 0 then
+		forget(song:GetSongDir())
+		return {dir = song:GetSongDir(), status = "error", text = "the offset was changed since: nothing undone"}
 	end
 	if native and native.dir == song:GetSongDir() then
 		lib.oh_measure(native.song, ffi.new("double[?]", #native.beats, native.beats), #native.beats, native.offset)
@@ -445,6 +521,7 @@ local function runNative(action, choice)
 	end
 	shown = shown and shown.dir == song:GetSongDir() and shown or {dir = song:GetSongDir()}
 	local before = shown
+	local fileBefore = action == "apply" and fileOffset(song) or nil
 	shown.status = "working"
 	shown.text = action == "measure" and "measuring..." or action == "apply" and "applying..." or "undoing..."
 	frame:playcommand("Show")
@@ -468,6 +545,11 @@ local function runNative(action, choice)
 			result = before
 		end
 		shown = result
+		if result.status == "applied" then
+			remember(song:GetSongDir(), result.applied, fileBefore)
+		elseif result.status == "restored" then
+			forget(song:GetSongDir())
+		end
 		if result.status == "applied" or result.status == "restored" then
 			reloadSong()
 		end
@@ -476,9 +558,41 @@ local function runNative(action, choice)
 	frame:sleep(0.02):queuecommand("Native")
 end
 
+-- Undo for a song applied before it was selected this time (or in an earlier run): the offset
+-- from before goes back into each simfile that still has the one applied. No DLL or page needed.
+local function undoRemembered(song)
+	local dir = song:GetSongDir()
+	local e = synced()[dir]
+	if not e then
+		return
+	end
+	local written = 0
+	for _, path in ipairs(simfiles(song)) do
+		local text = File.Read(path)
+		local changed, old
+		if text then
+			changed, old = withOffset(text, e.before)
+		end
+		if changed and math.abs(old - tonumber(e.applied)) < 5e-7 and File.Write(path, changed) then
+			written = written + 1
+		end
+	end
+	forget(dir)
+	if written == 0 then
+		shown = {dir = dir, status = "error", text = "the offset was changed since: nothing undone"}
+	else
+		shown = {dir = dir, status = "restored", current = e.before}
+		reloadSong()
+	end
+	frame:playcommand("Show")
+end
+
 -- Sync, Apply and Undo: with the DLL when it loads, else through the page.
 local function act(action, choice)
-	if loadNative() then
+	local song = GAMESTATE:GetCurrentSong()
+	if action == "undo" and song and shown and shown.remembered and shown.dir == song:GetSongDir() then
+		undoRemembered(song)
+	elseif loadNative() then
 		runNative(action, choice)
 	else
 		send(action, choice)
@@ -501,7 +615,7 @@ local function checkResult()
 	if r.id ~= pending.id or r.status == "busy" then
 		return
 	end
-	local dir = pending.dir
+	local dir, before = pending.dir, pending.before
 	pending = nil
 	shown = shown and shown.dir == dir and shown or {dir = dir}
 	shown.status = r.status
@@ -509,6 +623,7 @@ local function checkResult()
 	if r.map and r.map ~= "" then
 		FILEMAN:FlushDirCache(DIR)
 		mapPath = r.map
+		shown.map = r.map
 	end
 	if r.status == "ready" then
 		shown.current = r.current
@@ -524,9 +639,11 @@ local function checkResult()
 		shown.applied = nil
 	elseif r.status == "applied" then
 		shown.applied = r.offset
+		remember(dir, r.offset, before)
 		reloadSong()
 	elseif r.status == "restored" then
 		shown.applied = nil
+		forget(dir)
 		reloadSong()
 	end
 	frame:playcommand("Show")
@@ -621,7 +738,7 @@ local t =
 				end
 				local map = self:GetParent():GetChild("OffsetHelperMap")
 				if map then
-					local visible = mapPath ~= nil and shown ~= nil and shown.dir == songDir() and self:GetVisible() and over(self:GetChild("Info"))
+					local visible = mapPath ~= nil and shown ~= nil and shown.map == mapPath and shown.dir == songDir() and self:GetVisible() and over(self:GetChild("Info"))
 					if visible then
 						placeMap(self:GetParent())
 					end
@@ -661,6 +778,9 @@ local t =
 		if dir == nil then
 			return
 		end
+		if not (shown and shown.dir == dir) and synced()[dir] then
+			shown = {dir = dir, status = "remembered", applied = synced()[dir].applied, remembered = true}
+		end
 		local s = shown and shown.dir == dir and shown or nil
 		local texts = {Label = "Offset:", Sync = "Sync", Info = "", B1 = "", B2 = "", B3 = ""}
 		actions = {Sync = function() act("measure") end}
@@ -681,6 +801,16 @@ local t =
 				texts.Info = s.inSync and ("in sync (" .. c.change .. " ms)") or (c.change .. " ms -> " .. c.offset)
 				texts.B1 = "Apply"
 				actions.B1 = function() act("apply", 1) end
+				-- Synced again after an earlier Apply: that one can still be undone.
+				if synced()[dir] then
+					texts.B2 = "Undo"
+					actions.B2 = function()
+						local song = GAMESTATE:GetCurrentSong()
+						if song then
+							undoRemembered(song)
+						end
+					end
+				end
 			else
 				texts.Info = "not sure, beat at:"
 				for i = 1, math.min(3, #s.choices) do
