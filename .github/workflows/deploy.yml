@@ -1,6 +1,7 @@
 # Builds the site and publishes it to GitHub Pages on every push to main, with the test version
 # from the fallback-overlay branch (the in-game part installed for every theme) at /fallback/.
-# This file is the same on both branches, so a push to either one publishes both.
+# This file is the same on both branches. Only main may publish (the github-pages environment's
+# rule), so a push to fallback-overlay starts this workflow on main, which publishes both.
 name: Deploy to GitHub Pages
 
 on:
@@ -18,7 +19,18 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  redeploy:
+    if: github.ref != 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - run: gh workflow run deploy.yml --ref main -R "$GITHUB_REPOSITORY"
+        env:
+          GH_TOKEN: ${{ github.token }}
+
   build:
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
