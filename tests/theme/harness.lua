@@ -87,8 +87,6 @@ function Actor:GetParent() return self.parent end
 function Actor:GetChild(name) for _, c in ipairs(self.children) do if c.def.Name == name then return c end end return nil end
 function Actor:GetZoomedWidth() return self.def.Class == "BitmapText" and #self.text * 8 * self.z or self.w end
 function Actor:GetZoomedHeight() return self.def.Class == "BitmapText" and 20 * self.z or self.h end
-function Actor:GetX() return self.px end
-function Actor:GetY() return self.py end
 function Actor:GetTrueX() return self.px + (self.parent and self.parent:GetTrueX() or 0) end
 function Actor:GetTrueY() return self.py + (self.parent and self.parent:GetTrueY() or 0) end
 function Actor:SetUpdateFunction(f) self.update = f return self end
@@ -385,68 +383,6 @@ tick()
 labels = root:GetChild("OffsetHelperLabels")
 check("rebirth: the map covers the song box's banner", map.shown and map.px == 0 and map.py == 72 and math.abs(map.w - 520) < 1e-6 and math.abs(map.h - 162) < 1e-6 and labels.px == 0 and labels.py == 72, map.px .. "," .. map.py .. " " .. map.w .. "x" .. map.h)
 THEME, SCREEN_WIDTH, SCREEN_HEIGHT = nil, nil, nil
-
--- As an overlay screen (ScreenOffsetHelper, installed in _fallback for every theme): the overlay
--- screen takes the input, the line shows only while song select is on top, and in a theme whose
--- layout is not known it sits bottom left, can be dragged and put back.
-THEME = {GetCurThemeName = function() return "Some Theme" end}
-local overlayScreen = {AddInputCallback = function(_, f) callback = f end}
-function overlayScreen:GetTrueX() return 0 end
-function overlayScreen:GetTrueY() return 0 end
-function overlayScreen:GetParent() return nil end
-local songSelect = {GetMusicWheel = function() end, ReloadCurrentSong = screen.ReloadCurrentSong, AddInputCallback = function() error("the overlay takes input from its own screen") end}
-local top = songSelect
-SCREENMAN = {GetTopScreen = function() return top end}
-local function loadOverlay()
-	callback = nil
-	root = build(loadfile("src/theme/offsethelper.lua")("overlay"))
-	root.parent = overlayScreen
-	init(root)
-	root:playcommand("On")
-	line = root:GetChild("OffsetHelperLine")
-	map = root:GetChild("OffsetHelperMap")
-end
-local function press(button, kind) return callback({type = kind or "InputEventType_FirstPress", DeviceInput = {button = "DeviceButton_" .. button .. " mouse button"}}) end
-local POS = "/OffsetHelper/position.txt"
-loadOverlay()
-check("overlay: takes input from its own screen", callback ~= nil)
-check("overlay: other themes get the line bottom left", line.px == 10 and line.py == 430 and line.shown == true, line.px .. "," .. line.py)
-top = {}
-tick()
-check("overlay: hidden over other screens", line.shown == false)
-check("overlay: no clicks there", click("Sync") == false)
-top = songSelect
-tick()
-check("overlay: back on song select", line.shown == true)
-click("Sync")
-check("overlay: measures", text("Info") == "+14.8 ms -> -0.438235", text("Info"))
-point("Info")
-tick()
-check("overlay: the map above the line in the screen's lower half", map.shown == true and map.px == 10 and math.abs(map.py - (430 - 12 - 120)) < 1e-6, map.px .. "," .. map.py)
-mouse.x = -100
-tick()
-point("Label")
-local grabX, grabY = mouse.x, mouse.y
-check("overlay: the Offset word takes hold", press("left") == true)
-mouse.x, mouse.y = grabX + 200, grabY - 300
-tick()
-check("overlay: the line follows the mouse", line.px == 210 and line.py == 130, line.px .. "," .. line.py)
-check("overlay: letting go keeps the place for this theme", press("left", "InputEventType_Release") == true and files[POS] == "Some Theme\t0.2459\t0.2708\n", files[POS])
-point("Info")
-tick()
-check("overlay: the map below the line in the upper half", map.shown == true and math.abs(map.py - 142) < 1e-6, map.py)
-mouse.x = -100
-tick()
-loadOverlay()
-check("overlay: the place kept after a restart", math.abs(line.px - 210) < 0.1 and math.abs(line.py - 130) < 0.1, line.px .. "," .. line.py)
-point("Label")
-check("overlay: right-click puts it back", press("right") == true and line.px == 10 and line.py == 430 and files[POS] == "", line.px .. "," .. line.py .. " " .. tostring(files[POS]))
-local copy = build(dofile("src/theme/offsethelper.lua"))
-check("overlay: a copy loaded from a theme stays empty", #copy.children == 0, #copy.children)
-THEME = {GetCurThemeName = function() return "Til Death" end}
-loadOverlay()
-check("overlay: Til' Death keeps its place above the banner", line.px == 10 and line.py == 50, line.px .. "," .. line.py)
-THEME, OFFSETHELPER_OVERLAY = nil, nil
 
 print(failures == 0 and "all passed" or (failures .. " failed"))
 os.exit(failures == 0 and 0 or 1)

@@ -7,10 +7,9 @@ import './style.css';
 import { h } from './dom';
 import { findChild, findFile, firstAudio } from './files';
 import { loadSimfile } from './model/simfileIO';
-import { GAME_DIR, LOAD_LINE, OVERLAY_FOLDER, formatFields, overlayState, parseFields, parseRequest, songPath, withOverlay, withoutLoadLine, withoutOverlay } from './game';
+import { GAME_DIR, LOAD_LINE, formatFields, parseFields, parseRequest, songPath, withLoadLine, withoutLoadLine } from './game';
 import { chosenSimfile, findSong, parseNowPlaying, type NowPlaying, type SongFolder } from './nowPlaying';
 import themeLua from './theme/offsethelper.lua?raw';
-import overlayLua from './theme/overlay.lua?raw';
 import { additionalSongFolders, readOffset, withOffset } from './offsetFile';
 import type { TimingData } from './model/types';
 import { WIDE_MS, WIDE_ROWS, analyzeMusic, recommendFromCurve, type Choice, type MusicAnalysis, type Recommendation } from './recommend';
@@ -59,50 +58,26 @@ async function writeBytes(dir: FileSystemDirectoryHandle, name: string, bytes: U
 }
 
 /** What the page saves the native part as (Chrome will not write .dll files; the theme loads either name). */
-/** A theme older versions installed the in-game part into: its folder in Themes, and the song select folder it was loaded from. */
+/** A theme the in-game part can go into: its folder in Themes, and the song select folder it is loaded from. */
 interface GameTheme {
   name: string;
   folder: RegExp;
+  usual: string;
   layer: string;
+  /** Where the line shows, for messages. */
+  where: string;
 }
 const GAME_THEMES: GameTheme[] = [
-  { name: 'Til’ Death', folder: /^til'?\s*death$/i, layer: 'ScreenSelectMusic decorations' },
-  { name: 'Rebirth', folder: /^rebirth$/i, layer: 'ScreenSelectMusic overlay' },
+  { name: 'Til’ Death', folder: /^til'?\s*death$/i, usual: 'Til Death', layer: 'ScreenSelectMusic decorations', where: 'above the banner' },
+  // Rebirth draws its header in the overlay, above the decorations, so the line loads from there.
+  { name: 'Rebirth', folder: /^rebirth$/i, usual: 'Rebirth', layer: 'ScreenSelectMusic overlay', where: 'in the header, under the icons' },
 ];
-/** The older install, found in a theme's song select. */
-interface OldInstall {
+interface GameInTheme {
   theme: GameTheme;
   folder: string;
   dir: FileSystemDirectoryHandle;
-}
-/**
- * The in-game part (an overlay screen in Themes/_fallback, for every theme): absent, installed, or
- * installed but not as this page would (older files, a theme's own overlay list without it, the
- * older install still in a theme's song select).
- */
-interface GameInstall {
   state: 'absent' | 'installed' | 'outdated';
-  /** Themes besides _fallback that have their own OverlayScreens list (they need the helper in it too). */
-  ownLists: string[];
-  /** What Update would fix. */
-  why: string[];
-  old: OldInstall[];
 }
-interface ThemeMetrics {
-  name: string;
-  dir: FileSystemDirectoryHandle;
-  file: FileSystemFileHandle;
-}
-
-// Theme files are read as UTF-8 and written back only when they are (a BOM stays as it was).
-const utf8 = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
-const readText = async (file: FileSystemFileHandle) => utf8.decode(await (await file.getFile()).arrayBuffer());
-async function writeText(file: FileSystemFileHandle, text: string): Promise<void> {
-  const w = await file.createWritable();
-  await w.write(text);
-  await w.close();
-}
-const listing = (names: string[]) => (names.length < 2 ? names.join('') : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`);
 
 const DLL_NAME = 'offsethelper.dat';
 
@@ -136,9 +111,9 @@ class Helper {
   message = '';
   /** How the message reads: done (green), warn (amber) or error (red). */
   messageKind: 'done' | 'warn' | 'error' = 'error';
-  /** The in-game part as installed (null before looking, or when it cannot be installed). */
-  game: GameInstall | null = null;
-  /** Why it cannot be installed, or null. */
+  /** The in-game part in each theme it can go into that is in the Themes folder: absent, installed, or installed but older than this page's. */
+  games: GameInTheme[] = [];
+  /** Why no theme it can go into was found, or null (also null before looking). */
   gameNote: string | null = null;
   /** Sync map images in OffsetHelper that can go: all but the newest of each kind (page PNG, DLL BMP). */
   oldMaps: { names: string[]; bytes: number } = { names: [], bytes: 0 };
@@ -450,51 +425,22 @@ class Helper {
     return p.root === 'AdditionalSongs' ? 'not found in the extra songs folders added on the helper page' : 'not found in Songs';
   }
 
-  /** The themes in the Themes folder that have a metrics.ini. */
-  private async themeMetrics(): Promise<ThemeMetrics[]> {
+  /** The themes in the Themes folder that the in-game part can go into, with the folder it loads from. */
+  private async themes(): Promise<{ found: { theme: GameTheme; folder: string; dir: FileSystemDirectoryHandle }[]; note: string | null }> {
     const themes = await findChild(this.folders.install!, 'Themes', 'directory');
-    if (!themes) throw new Error('there is no Themes folder in the Etterna folder');
-    const found: ThemeMetrics[] = [];
-    for await (const [name, handle] of themes.entries()) {
-      if (handle.kind !== 'directory') continue;
-      const file = await findChild(handle as FileSystemDirectoryHandle, 'metrics.ini', 'file');
-      if (file) found.push({ name, dir: handle as FileSystemDirectoryHandle, file });
-    }
-    if (!found.some((t) => t.name.toLowerCase() === '_fallback')) throw new Error('there is no _fallback theme in the Themes folder');
-    return found;
-  }
-
-  /** The overlay screen's folder in _fallback (null when it is not there and `create` is false). */
-  private async overlayFolder(fallback: ThemeMetrics, create = false): Promise<FileSystemDirectoryHandle | null> {
-    if (create) return (await fallback.dir.getDirectoryHandle('BGAnimations', { create: true })).getDirectoryHandle(OVERLAY_FOLDER, { create: true });
-    const bg = await findChild(fallback.dir, 'BGAnimations', 'directory');
-    return bg && findChild(bg, OVERLAY_FOLDER, 'directory');
-  }
-
-  /** Themes whose song select still loads the in-game part the way older versions installed it. */
-  private async oldInstalls(): Promise<OldInstall[]> {
-    const themes = await findChild(this.folders.install!, 'Themes', 'directory');
-    if (!themes) return [];
-    const found: OldInstall[] = [];
-    for await (const [folder, handle] of themes.entries()) {
-      const theme = GAME_THEMES.find((g) => g.folder.test(folder));
-      if (!theme || handle.kind !== 'directory') continue;
-      const bg = await findChild(handle as FileSystemDirectoryHandle, 'BGAnimations', 'directory');
+    if (!themes) return { found: [], note: 'there is no Themes folder in the Etterna folder' };
+    const names: string[] = [];
+    for await (const [n, h] of themes.entries()) if (h.kind === 'directory') names.push(n);
+    const found: { theme: GameTheme; folder: string; dir: FileSystemDirectoryHandle }[] = [];
+    for (const theme of GAME_THEMES) {
+      const matching = names.filter((n) => theme.folder.test(n));
+      const folder = matching.find((n) => n === theme.usual) ?? matching[0];
+      if (!folder) continue;
+      const bg = await findChild(await themes.getDirectoryHandle(folder), 'BGAnimations', 'directory');
       const dir = bg && (await findChild(bg, theme.layer, 'directory'));
-      if (!dir) continue;
-      const main = await findChild(dir, 'default.lua', 'file');
-      const loads = main ? (await (await main.getFile()).text()).includes(LOAD_LINE) : false;
-      if (loads || (await findChild(dir, 'offsethelper.lua', 'file'))) found.push({ theme, folder, dir });
+      if (dir && (await findChild(dir, 'default.lua', 'file'))) found.push({ theme, folder, dir });
     }
-    return found;
-  }
-
-  /** Takes the older install out of a theme's song select (its line and offsethelper.lua). */
-  private async removeOld(o: OldInstall): Promise<void> {
-    const main = await findChild(o.dir, 'default.lua', 'file');
-    const text = main ? await (await main.getFile()).text() : '';
-    if (main && text.includes(LOAD_LINE)) await writeText(main, withoutLoadLine(text));
-    await o.dir.removeEntry('offsethelper.lua').catch(() => undefined);
+    return { found, note: found.length ? null : 'neither Til’ Death nor Rebirth (with its song select files) is in the Themes folder' };
   }
 
   private async checkGame(): Promise<void> {
@@ -507,36 +453,21 @@ class Helper {
       this.probe = null;
     }
     try {
-      const themes = await this.themeMetrics();
-      const fallback = themes.find((t) => t.name.toLowerCase() === '_fallback')!;
-      const fb = overlayState(await readText(fallback.file));
-      if (!fb.lists) throw new Error('Themes/_fallback/metrics.ini has no OverlayScreens line');
-      const ownLists: string[] = [];
-      const missing: string[] = [];
-      const why: string[] = [];
-      for (const t of themes) {
-        if (t === fallback) continue;
-        const st = overlayState(await readText(t.file).catch(() => ''));
-        if (!st.lists) continue;
-        ownLists.push(t.name);
-        if (st.withUs < st.lists) missing.push(t.name);
-      }
-      const folder = await this.overlayFolder(fallback);
-      const loader = folder && (await findChild(folder, 'default.lua', 'file'));
-      const lua = folder && (await findChild(folder, 'offsethelper.lua', 'file'));
-      const there = fb.withUs > 0 || fb.section || folder !== null;
-      const current = fb.withUs === fb.lists && fb.section && loader !== null && lua !== null && (await readText(loader)) === overlayLua && (await readText(lua)) === themeLua;
-      if (there && !current) why.push('its files in _fallback are not this version’s (or an Etterna update replaced some)');
-      if (there && missing.length) why.push(`${listing(missing)} ${missing.length === 1 ? 'has its' : 'have their'} own overlay list without it`);
+      const { found, note } = await this.themes();
+      this.gameNote = note;
       const dll = await findChild(await this.gameDir(), DLL_NAME, 'file');
       const ours = await nativeDll();
-      if (there && ours && !(dll !== null && sameBytes(new Uint8Array(await (await dll.getFile()).arrayBuffer()), ours))) why.push('its DLL is not this version’s');
-      const old = await this.oldInstalls();
-      if (old.length) why.push(`${listing(old.map((o) => o.folder))} still load${old.length === 1 ? 's' : ''} the older install from ${old.length === 1 ? 'its' : 'their'} song select`);
-      this.game = { state: !there && !old.length ? 'absent' : why.length ? 'outdated' : 'installed', ownLists, why, old };
-      this.gameNote = null;
+      const sameDll = !ours || (dll !== null && sameBytes(new Uint8Array(await (await dll.getFile()).arrayBuffer()), ours));
+      this.games = [];
+      for (const f of found) {
+        const lua = await findChild(f.dir, 'offsethelper.lua', 'file');
+        const main = await (await f.dir.getFileHandle('default.lua')).getFile().then((x) => x.text());
+        // Up to date when both the Lua and the DLL are this page's.
+        const state = !lua || !main.includes(LOAD_LINE) ? 'absent' : (await (await lua.getFile()).text()) === themeLua && sameDll ? 'installed' : 'outdated';
+        this.games.push({ ...f, state });
+      }
     } catch (e) {
-      this.game = null;
+      this.games = [];
       this.gameNote = (e as Error).message;
     }
   }
@@ -576,43 +507,30 @@ class Helper {
     this.render();
   }
 
-  /**
-   * Installs the in-game part as an overlay screen for every theme: its files into
-   * Themes/_fallback/BGAnimations/ScreenOffsetHelper overlay, its name into OverlayScreens (in
-   * _fallback, and in each theme with its own list) and its section into _fallback's metrics.ini.
-   * The metrics.ini files are kept in OffsetHelper/backup as they were before the first change; the
-   * older install is taken out of the themes' song select (it would show the line twice).
-   */
-  async installGame(): Promise<void> {
+  /** Puts offsethelper.lua into a theme and loads it from its song select (the original file is kept in OffsetHelper/backup). */
+  async installGame(g: GameInTheme): Promise<void> {
     try {
-      const themes = await this.themeMetrics();
-      const fallback = themes.find((t) => t.name.toLowerCase() === '_fallback')!;
-      // Everything is read and checked before anything is written.
-      const edits: { theme: ThemeMetrics; before: string; after: string }[] = [];
-      for (const theme of themes) {
-        let before: string;
-        try {
-          before = await readText(theme.file);
-        } catch {
-          if (theme === fallback) throw new Error('Themes/_fallback/metrics.ini is not UTF-8 text, so it was left alone');
-          continue;
-        }
-        const after = withOverlay(before, theme === fallback);
-        if (theme === fallback && overlayState(after).withUs === 0) throw new Error('Themes/_fallback/metrics.ini has no OverlayScreens line, so it was left alone');
-        if (after !== before) edits.push({ theme, before, after });
-      }
-      // The screen's files first, so metrics.ini never names a screen that is not there.
-      const folder = (await this.overlayFolder(fallback, true))!;
-      await writeText(await folder.getFileHandle('default.lua', { create: true }), overlayLua);
-      await writeText(await folder.getFileHandle('offsethelper.lua', { create: true }), themeLua);
+      const mainFile = await g.dir.getFileHandle('default.lua');
+      const original = await (await mainFile.getFile()).text();
+      const patched = withLoadLine(original);
+      if (patched === null) throw new Error(`Themes/${g.folder}/BGAnimations/${g.theme.layer}/default.lua does not end with "return t" as expected, so it was left alone`);
+      const ours = await (await g.dir.getFileHandle('offsethelper.lua', { create: true })).createWritable();
+      await ours.write(themeLua);
+      await ours.close();
       const game = await this.gameDir();
-      const backups = await game.getDirectoryHandle('backup', { create: true });
-      for (const e of edits) {
-        const b = await backups.getDirectoryHandle(e.theme.name, { create: true });
-        if (!(await findChild(b, 'metrics.ini', 'file'))) await writeText(await b.getFileHandle('metrics.ini', { create: true }), e.before);
-        await writeText(e.theme.file, e.after);
+      if (patched !== original) {
+        // Til' Death's copy stays where the first versions kept it.
+        let backups = await game.getDirectoryHandle('backup', { create: true });
+        if (g.theme.name !== 'Til’ Death') backups = await backups.getDirectoryHandle(g.folder, { create: true });
+        if (!(await findChild(backups, 'default.lua', 'file'))) {
+          const b = await (await backups.getFileHandle('default.lua', { create: true })).createWritable();
+          await b.write(original);
+          await b.close();
+        }
+        const w = await mainFile.createWritable();
+        await w.write(patched);
+        await w.close();
       }
-      for (const o of await this.oldInstalls()) await this.removeOld(o);
       for (const name of ['request.txt', 'result.txt']) await game.getFileHandle(name, { create: true });
       // The native part, which measures in game (Windows). Saved as .dat: Chrome refuses to write
       // .dll files from a page; Windows loads it under any name. Etterna keeps it open while running.
@@ -629,7 +547,7 @@ class Helper {
         }
       }
       this.messageKind = dllNote ? 'warn' : 'done';
-      this.message = `Installed for every theme. Restart Etterna to see the Offset line on song select; it measures in game, no browser needed.${dllNote}`;
+      this.message = `Installed into Themes/${g.folder}. Restart Etterna to see the Offset line ${g.theme.where} on song select; it measures in game, no browser needed.${dllNote}`;
     } catch (e) {
       this.messageKind = 'error';
       this.message = `Could not install: ${(e as Error).message}`;
@@ -638,27 +556,26 @@ class Helper {
     this.render();
   }
 
-  /** Takes the in-game part out again: its name and section out of every metrics.ini (the rest stays), its files, the older install and the DLL. */
-  async uninstallGame(): Promise<void> {
+  /** Takes the line out of a theme's song select and removes offsethelper.lua (and the DLL once no theme uses it). */
+  async uninstallGame(g: GameInTheme): Promise<void> {
     try {
-      const themes = await this.themeMetrics();
-      const fallback = themes.find((t) => t.name.toLowerCase() === '_fallback')!;
-      // metrics.ini first, so it never names a screen that is not there.
-      for (const theme of themes) {
-        const before = await readText(theme.file).catch(() => null);
-        if (before === null) continue;
-        const after = withoutOverlay(before);
-        if (after !== before) await writeText(theme.file, after);
+      const mainFile = await g.dir.getFileHandle('default.lua');
+      const text = await (await mainFile.getFile()).text();
+      if (text.includes(LOAD_LINE)) {
+        const w = await mainFile.createWritable();
+        await w.write(withoutLoadLine(text));
+        await w.close();
       }
-      const bg = await findChild(fallback.dir, 'BGAnimations', 'directory');
-      if (bg) await bg.removeEntry(OVERLAY_FOLDER, { recursive: true }).catch((e: DOMException) => (e.name === 'NotFoundError' ? undefined : Promise.reject(e)));
-      for (const o of await this.oldInstalls()) await this.removeOld(o);
-      const dllGone = await (await this.gameDir()).removeEntry(DLL_NAME).then(
-        () => true,
-        (e: DOMException) => e.name === 'NotFoundError',
-      );
+      await g.dir.removeEntry('offsethelper.lua').catch(() => undefined);
+      const stillUsed = this.games.some((o) => o.folder !== g.folder && o.state !== 'absent');
+      const dllGone =
+        stillUsed ||
+        (await (await this.gameDir()).removeEntry(DLL_NAME).then(
+          () => true,
+          (e: DOMException) => e.name === 'NotFoundError',
+        ));
       this.messageKind = dllGone ? 'done' : 'warn';
-      this.message = `Removed from every theme. Restart Etterna for it to go.${dllGone ? '' : ` OffsetHelper/${DLL_NAME} is still there (Etterna has it open): close Etterna and press Uninstall again, or delete it by hand.`}`;
+      this.message = `Removed from Themes/${g.folder}. Restart Etterna for it to go.${dllGone ? '' : ` OffsetHelper/${DLL_NAME} is still there (Etterna has it open): close Etterna and press Uninstall again, or delete it by hand.`}`;
     } catch (e) {
       this.messageKind = 'error';
       this.message = `Could not uninstall: ${(e as Error).message}`;
@@ -858,40 +775,38 @@ class Helper {
 
   private gameCard(): HTMLElement | null {
     if (!this.folders.install || !this.granted) return null;
-    const what =
-      'An Offset line on song select, in every theme: Sync measures the selected song, Apply writes the offset and reloads the song, and hovering the result shows the sync map (over the banner in Til’ Death and Rebirth, next to the line in other themes). Drag the word “Offset:” to move the line; right-click it to put it back. A small DLL does the measuring in game (Windows), so no browser is needed while you play.';
+    const what = 'An Offset line on song select: Sync measures the selected song, Apply writes the offset and reloads the song, and hovering the result shows the sync map over the banner. A small DLL does the measuring in game (Windows), so no browser is needed while you play.';
     const button = (label: string, onclick: () => void, primary = false) => h('button', { type: 'button', class: primary ? 'primary' : '', onclick }, label);
-    const g = this.game;
-    const own = g?.ownLists.length ? listing(g.ownLists) : '';
-    const status = !g
-      ? null
-      : g.state === 'installed'
-        ? `Installed for every theme: an overlay screen in Themes/_fallback${own ? `, also named in ${own}’s own overlay list` : ''}. An Etterna update replaces _fallback: install again after one.`
-        : g.state === 'outdated'
-          ? g.why.length === 1 && g.old.length
-            ? `Installed the older way, into the song select of ${listing(g.old.map((o) => o.folder))}. Update moves it to every theme (and out of there, so the line does not show twice).`
-            : `Installed, but ${g.why.join('; ')}. Update puts it right${g.old.length ? ' (the line would show twice otherwise)' : ''}.`
-          : `Not installed. Install adds an overlay screen to Themes/_fallback, the theme every theme falls back to (the folder BGAnimations/ScreenOffsetHelper overlay, and its name in metrics.ini)${own ? `, and its name to ${own}’s own overlay list` : ''}. Nothing else changes; the metrics.ini files are kept in OffsetHelper/backup as they were.`;
+    const row = (g: GameInTheme) =>
+      h(
+        'div',
+        { class: 'theme-row' },
+        h(
+          'p',
+          {},
+          h('strong', {}, g.theme.name),
+          ' — ',
+          g.state === 'installed'
+            ? `installed (the line is ${g.theme.where}).`
+            : g.state === 'outdated'
+              ? 'installed, from an older version of this page.'
+              : `not installed. Install adds offsethelper.lua to Themes/${g.folder} and one line to its song select ${g.theme.layer.split(' ')[1]}; the original file is kept in OffsetHelper/backup.`,
+        ),
+        h(
+          'div',
+          { class: 'actions' },
+          g.state === 'absent' ? button(`Install into ${g.theme.name}`, () => void this.installGame(g), true) : null,
+          g.state === 'outdated' ? button('Update', () => void this.installGame(g), true) : null,
+          g.state !== 'absent' ? button('Uninstall', () => void this.uninstallGame(g)) : null,
+        ),
+      );
     return h(
       'section',
       { class: 'card' },
       h('h2', {}, 'In game'),
       h('p', { class: 'hint' }, what),
       this.gameNote ? h('p', { class: 'warn' }, `Cannot install: ${this.gameNote}.`) : null,
-      g
-        ? h(
-            'div',
-            { class: 'theme-row' },
-            h('p', {}, status),
-            h(
-              'div',
-              { class: 'actions' },
-              g.state === 'absent' ? button('Install', () => void this.installGame(), true) : null,
-              g.state === 'outdated' ? button('Update', () => void this.installGame(), true) : null,
-              g.state !== 'absent' ? button('Uninstall', () => void this.uninstallGame()) : null,
-            ),
-          )
-        : null,
+      ...this.games.map(row),
       this.oldMaps.names.length
         ? h(
             'div',

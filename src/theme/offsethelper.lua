@@ -1,28 +1,14 @@
 -- Etterna offset helper, in-game part: https://maidoffire.github.io/etterna-offset-helper/
 --
--- A line on song select. Sync measures the selected song's offset, Apply writes the recommended
--- one and reloads the song. Hovering the result shows the sync map (over the banner in Til' Death
--- and Rebirth, next to the line in other themes). Dragging the "Offset:" word moves the line (kept
--- per theme in OffsetHelper/position.txt); right-clicking it puts it back.
---
--- The measuring is done by OffsetHelper/offsethelper.dat (or .dll), loaded through LuaJIT's FFI:
+-- A line on song select (Til' Death: above the banner, loaded from its decorations; Rebirth: in
+-- the header under its icons, loaded from its overlay, which is drawn above the header).
+-- Sync measures the selected song's offset, Apply writes the recommended one and reloads the song.
+-- Hovering the result shows the sync map over the banner. The measuring is done by OffsetHelper/offsethelper.dat (or .dll), loaded through LuaJIT's FFI:
 -- it decodes the music as Etterna plays it and measures it as the helper page does. Without the
 -- DLL, the helper page does it (open in Chrome or Edge): this file and the page then talk through
 -- OffsetHelper/request.txt and OffsetHelper/result.txt in the Etterna folder.
 --
--- Installed by the helper page (it also removes it again) as an overlay screen, ScreenOffsetHelper,
--- in Themes/_fallback: Etterna draws overlay screens over every screen, in every theme, and the
--- line shows only while song select is the screen on top. Its loader passes "overlay". Older
--- installs loaded this file from Til' Death's or Rebirth's song select instead (no argument).
-
-local MODE = ...
-local OVERLAY = MODE == "overlay"
-if OVERLAY then
-	OFFSETHELPER_OVERLAY = true
-elseif OFFSETHELPER_OVERLAY then
-	-- The overlay already shows the line: a copy still loaded from a theme stays out of the way.
-	return Def.ActorFrame {}
-end
+-- Installed by the helper page (it also removes it again). To move the line, change the layout below.
 
 -- Rebirth is made for a screen 720 high and has its banner on the right; Til' Death, and the
 -- layout used for any other theme, is made for 480.
@@ -30,11 +16,7 @@ local function themeName()
 	local ok, name = pcall(function() return THEME:GetCurThemeName() end)
 	return ok and type(name) == "string" and name or ""
 end
-local THEME_NAME = themeName()
--- "rebirth", "tildeath" or "other" (a theme whose layout is not known: the line goes bottom left).
--- Loaded from a theme's own song select, it is Til' Death or Rebirth.
-local LAYOUT = THEME_NAME:lower():find("rebirth") and "rebirth" or (THEME_NAME:lower():find("^til'?%s*death") or not OVERLAY) and "tildeath" or "other"
-local REBIRTH = LAYOUT == "rebirth"
+local REBIRTH = themeName():lower():find("rebirth") ~= nil
 local W = SCREEN_WIDTH or 854
 local H = SCREEN_HEIGHT or 480
 -- The line: its left end (X) or, when RIGHT is set, its right end; Y is its middle.
@@ -47,21 +29,14 @@ if REBIRTH then
 	-- The banner, at the top of the song box (it moves with the box: see placeMap).
 	MAP_X, MAP_Y, MAP_W, MAP_H = W * 1140 / 1920, H * 109 / 1080, W * 780 / 1920, H * 243 / 1080
 	ZOOM, GAP = 0.55, 12
-elseif LAYOUT == "tildeath" then
+else
 	local s = H / 480
 	X, Y = 10 * s, 50 * s
 	MAP_X, MAP_Y = 10 * s, 61 * s
 	MAP_W = capWideScale and capWideScale(get43size(384), 384) * s or 384 * s
 	MAP_H = capWideScale and capWideScale(get43size(120), 120) * s or 120 * s
 	ZOOM, GAP = 0.4 * s, 8 * s
-else
-	-- Bottom left, above where footers usually are; the map goes next to the line (see placeMap).
-	local s = H / 480
-	X, Y = 10 * s, H - 50 * s
-	MAP_X, MAP_Y, MAP_W, MAP_H = 0, 0, 384 * s, 120 * s
-	ZOOM, GAP = 0.4 * s, 8 * s
 end
-local HOME = {X = X, Y = Y, RIGHT = RIGHT}
 -- Seconds to wait for the page to answer before saying it is not running.
 local TIMEOUT = 6
 local PAGE = "maidoffire.github.io/etterna-offset-helper"
@@ -69,38 +44,6 @@ local PAGE = "maidoffire.github.io/etterna-offset-helper"
 local DIR = "/OffsetHelper/"
 local REQUEST = DIR .. "request.txt"
 local RESULT = DIR .. "result.txt"
-
--- Where the line was dragged to, per theme: a line each with the theme's name and the line's left
--- end and middle as parts of the screen's width and height, tab-separated.
-local POSITIONS = DIR .. "position.txt"
-local function positions()
-	local list = {}
-	local ok, text = pcall(File.Read, POSITIONS)
-	for line in string.gmatch(ok and text or "", "[^\r\n]+") do
-		local name, x, y = string.match(line, "^([^\t]+)\t([^\t]+)\t([^\t]+)$")
-		if name and tonumber(x) and tonumber(y) then
-			list[name] = {x = tonumber(x), y = tonumber(y)}
-		end
-	end
-	return list
-end
--- Keeps the line's place for this theme (nil: back to its usual place).
-local function savePosition(x, y)
-	local list = positions()
-	list[THEME_NAME] = x and {x = x / W, y = y / H} or nil
-	local lines = {}
-	for name, p in pairs(list) do
-		lines[#lines + 1] = string.format("%s\t%.4f\t%.4f", name, p.x, p.y)
-	end
-	table.sort(lines)
-	File.Write(POSITIONS, table.concat(lines, "\n") .. (#lines > 0 and "\n" or ""))
-end
-do
-	local p = positions()[THEME_NAME]
-	if p then
-		X, Y, RIGHT = p.x * W, p.y * H, nil
-	end
-end
 
 -- Once per start: what this Etterna's Lua can do (LuaJIT, its compiler, its FFI), to find out
 -- whether the measuring could run in game through a small native library instead of the page.
@@ -213,8 +156,8 @@ local function loadNative()
 end
 
 local function mainColor(name, fallback)
-	-- Til' Death has a "positive" colour; Rebirth's and other themes' colours have other names.
-	if getMainColor and LAYOUT == "tildeath" then
+	-- Til' Death has a "positive" colour; Rebirth's colours have other names.
+	if getMainColor and not REBIRTH then
 		local ok, c = pcall(getMainColor, name)
 		if ok and c ~= nil then
 			return c
@@ -738,70 +681,28 @@ end
 -- the profile pages are open), so the map follows the box's frame when there is one. Etterna
 -- moves a screen's decorations into the screen itself, so the box is a child of the screen.
 local function placeMap(root)
-	local x, y
-	if REBIRTH then
-		local box = SCREENMAN:GetTopScreen()
-		for _, name in ipairs({"RightFrame", "CurSongBoxFile", "Frame"}) do
-			box = box and box.GetChild and box:GetChild(name)
-		end
-		if box then
-			x, y = box:GetTrueX(), box:GetTrueY()
-		end
-	elseif LAYOUT == "other" then
-		-- Next to the line: above it in the lower half of the screen, below it in the upper half.
-		local lx, ly = frame:GetTrueX(), frame:GetTrueY()
-		x = math.max(0, math.min(lx, W - MAP_W))
-		y = ly > H / 2 and ly - 12 * H / 480 - MAP_H or ly + 12 * H / 480
+	if not REBIRTH then
+		return
 	end
-	if x then
-		root:GetChild("OffsetHelperMap"):xy(x, y)
-		root:GetChild("OffsetHelperLabels"):xy(x, y)
+	local box = SCREENMAN:GetTopScreen()
+	for _, name in ipairs({"RightFrame", "CurSongBoxFile", "Frame"}) do
+		box = box and box.GetChild and box:GetChild(name)
+	end
+	if box then
+		root:GetChild("OffsetHelperMap"):xy(box:GetTrueX(), box:GetTrueY())
+		root:GetChild("OffsetHelperLabels"):xy(box:GetTrueX(), box:GetTrueY())
 	end
 end
 
--- Til' Death (and themes made from it) draws its other tabs (scores, MSD, search, profile, ...)
--- over the place where the line and the map go, so they show only on its General tab. Rebirth's
--- line is in its header, which every page keeps.
+-- Til' Death draws its other tabs (scores, MSD, search, profile, ...) over the place where the
+-- line and the map go, so they show only on its General tab. Rebirth's line is in its header,
+-- which every page keeps.
 local function onGeneralTab()
 	return REBIRTH or getTabIndex == nil or getTabIndex() == 0
 end
 
--- As an overlay the line is there on every screen: it shows only while song select (or the
--- multiplayer one, made from it) is the screen on top, not over options, gameplay or results.
-local function onSongSelect()
-	if not OVERLAY then
-		return true
-	end
-	local top = SCREENMAN:GetTopScreen()
-	return top ~= nil and top.GetMusicWheel ~= nil
-end
-
-local function wanted()
-	return songDir() ~= nil and onSongSelect() and onGeneralTab()
-end
-
--- The screen that takes this line's input callback: the overlay screen it is in (overlay screens
--- get input before the screen under them), or the song select screen it was loaded from.
-local function ownScreen(actor)
-	local a = actor
-	while a do
-		if a.AddInputCallback then
-			return a
-		end
-		a = a:GetParent()
-	end
-	return SCREENMAN:GetTopScreen()
-end
-
--- The "Offset:" word being dragged: where the mouse took hold of the line.
-local dragging
-
-local LEFT = "DeviceButton_left mouse button"
-local RIGHT_BUTTON = "DeviceButton_right mouse button"
-
 local t =
 	Def.ActorFrame {
-	Name = "OffsetHelperLine",
 	InitCommand = function(self)
 		frame = self
 		self:xy(X or RIGHT, Y)
@@ -811,28 +712,11 @@ local t =
 			OFFSETHELPER_PROBED = true
 			pcall(probe)
 		end
-		local screen = ownScreen(self)
+		local screen = SCREENMAN:GetTopScreen()
 		if screen and screen.AddInputCallback then
 			screen:AddInputCallback(
 				function(event)
-					local button = event.DeviceInput.button
-					if event.type == "InputEventType_Release" and button == LEFT and dragging then
-						dragging = nil
-						savePosition(X, Y)
-						return true
-					end
-					if event.type ~= "InputEventType_FirstPress" or not self:GetVisible() then
-						return false
-					end
-					local label = self:GetChild("Label")
-					if button == RIGHT_BUTTON and over(label) then
-						X, Y, RIGHT = HOME.X, HOME.Y, HOME.RIGHT
-						savePosition(nil)
-						self:xy(X or RIGHT, Y)
-						self:playcommand("Show")
-						return true
-					end
-					if button ~= LEFT then
+					if event.type ~= "InputEventType_FirstPress" or event.DeviceInput.button ~= "DeviceButton_left mouse button" or not self:GetVisible() then
 						return false
 					end
 					for _, name in ipairs(BUTTONS) do
@@ -842,33 +726,17 @@ local t =
 							return true
 						end
 					end
-					if over(label) then
-						dragging = {dx = INPUTFILTER:GetMouseX() - self:GetX(), dy = INPUTFILTER:GetMouseY() - self:GetY()}
-						return true
-					end
 					return false
 				end
 			)
 		end
 		self:SetUpdateFunction(
 			function(self)
-				if OVERLAY and wanted() ~= self:GetVisible() then
-					self:playcommand("Show")
-				end
-				if dragging then
-					X = math.max(0, math.min(INPUTFILTER:GetMouseX() - dragging.dx, W - 40))
-					Y = math.max(0, math.min(INPUTFILTER:GetMouseY() - dragging.dy, H))
-					RIGHT = nil
-					self:xy(X, Y)
-				end
-				-- Buttons light up under the mouse, the "Offset:" word too (it can be dragged); the
-				-- sync map shows while the result is hovered.
+				-- Buttons light up under the mouse; the sync map shows while the result is hovered.
 				for _, name in ipairs(BUTTONS) do
 					local a = self:GetChild(name)
 					a:diffusealpha((actions[name] and self:GetVisible() and over(a)) and 0.6 or 1)
 				end
-				local label = self:GetChild("Label")
-				label:diffusealpha((dragging or (self:GetVisible() and over(label))) and 0.6 or 1)
 				local map = self:GetParent():GetChild("OffsetHelperMap")
 				if map then
 					local visible = mapPath ~= nil and shown ~= nil and shown.map == mapPath and shown.dir == songDir() and self:GetVisible() and over(self:GetChild("Info"))
@@ -878,13 +746,14 @@ local t =
 					map:visible(visible)
 					self:GetParent():GetChild("OffsetHelperLabels"):visible(visible and shown.mapRange ~= nil)
 				end
-				if pending and GetTimeSinceStart() - (self.lastCheck or 0) >= 0.25 then
-					self.lastCheck = GetTimeSinceStart()
+				self.sinceCheck = (self.sinceCheck or 0) + 1
+				if pending and self.sinceCheck >= 5 then
+					self.sinceCheck = 0
 					checkResult()
 				end
 			end
 		)
-		self:SetUpdateFunctionInterval(0.02)
+		self:SetUpdateFunctionInterval(0.05)
 		self:playcommand("Show")
 	end,
 	CurrentSongChangedMessageCommand = function(self)
@@ -904,12 +773,9 @@ local t =
 	TabChangedMessageCommand = function(self)
 		self:playcommand("Show")
 	end,
-	ScreenChangedMessageCommand = function(self)
-		self:playcommand("Show")
-	end,
 	ShowCommand = function(self)
 		local dir = songDir()
-		self:visible(wanted())
+		self:visible(dir ~= nil and onGeneralTab())
 		if dir == nil then
 			return
 		end
