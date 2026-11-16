@@ -223,7 +223,7 @@ local function send(action, choice)
 	end
 	pending = {id = id, action = action, dir = song:GetSongDir(), since = GetTimeSinceStart(), before = action == "apply" and fileOffset(song) or nil}
 	shown = shown and shown.dir == pending.dir and shown or {dir = pending.dir}
-	shown.status = "working"
+	shown.status, shown.warn = "working", nil
 	shown.text = action == "measure" and "measuring..." or action == "apply" and "applying..." or "undoing..."
 	frame:playcommand("Show")
 end
@@ -463,7 +463,7 @@ local function nativeApply(song, choice)
 		end
 	end
 	if written == 0 then
-		return {dir = song:GetSongDir(), status = "error", text = "the offset in the file changed: press Sync again"}
+		return {dir = song:GetSongDir(), status = "error", warn = true, text = "the offset in the file changed: press Sync again"}
 	end
 	-- The map again with the new offset, centred when the fix was right.
 	local shift = (native.offset - offset)
@@ -500,7 +500,7 @@ local function nativeUndo(song)
 	end
 	if restored == 0 then
 		forget(song:GetSongDir())
-		return {dir = song:GetSongDir(), status = "error", text = "the offset was changed since: nothing undone"}
+		return {dir = song:GetSongDir(), status = "error", warn = true, text = "the offset was changed since: nothing undone"}
 	end
 	if native and native.dir == song:GetSongDir() then
 		lib.oh_measure(native.song, ffi.new("double[?]", #native.beats, native.beats), #native.beats, native.offset)
@@ -522,7 +522,7 @@ local function runNative(action, choice)
 	shown = shown and shown.dir == song:GetSongDir() and shown or {dir = song:GetSongDir()}
 	local before = shown
 	local fileBefore = action == "apply" and fileOffset(song) or nil
-	shown.status = "working"
+	shown.status, shown.warn = "working", nil
 	shown.text = action == "measure" and "measuring..." or action == "apply" and "applying..." or "undoing..."
 	frame:playcommand("Show")
 	frame.nativeWork = function()
@@ -541,7 +541,7 @@ local function runNative(action, choice)
 			result = {dir = song:GetSongDir(), status = "error", text = tostring(result)}
 		end
 		if result.status == "error" and before.choices and action ~= "measure" then
-			before.status, before.text = "error", result.text
+			before.status, before.text, before.warn = "error", result.text, result.warn
 			result = before
 		end
 		shown = result
@@ -579,7 +579,7 @@ local function undoRemembered(song)
 	end
 	forget(dir)
 	if written == 0 then
-		shown = {dir = dir, status = "error", text = "the offset was changed since: nothing undone"}
+		shown = {dir = dir, status = "error", warn = true, text = "the offset was changed since: nothing undone"}
 	else
 		shown = {dir = dir, status = "restored", current = e.before}
 		reloadSong()
@@ -620,6 +620,7 @@ local function checkResult()
 	shown = shown and shown.dir == dir and shown or {dir = dir}
 	shown.status = r.status
 	shown.text = r.message
+	shown.warn = r.warn == "1"
 	if r.map and r.map ~= "" then
 		FILEMAN:FlushDirCache(DIR)
 		mapPath = r.map
@@ -831,7 +832,12 @@ local t =
 		if RIGHT then
 			self:x(RIGHT - (x - GAP))
 		end
-		self:GetChild("Info"):diffuse(s and s.status == "error" and color("#e06c6c") or color("#ffffff"))
+		-- Red for failures; amber when nothing was written because the file changed meanwhile.
+		local info = color("#ffffff")
+		if s and s.status == "error" then
+			info = s.warn and color("#d9a64a") or color("#e06c6c")
+		end
+		self:GetChild("Info"):diffuse(info)
 		local map = self:GetParent():GetChild("OffsetHelperMap")
 		if map and mapPath and map.loaded ~= mapPath then
 			map:Load(mapPath)

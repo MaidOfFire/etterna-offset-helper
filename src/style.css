@@ -180,8 +180,7 @@ button.quiet {
   color: var(--warn);
 }
 
-.error,
-.notice {
+.error {
   color: var(--bad);
 }
 

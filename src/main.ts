@@ -108,6 +108,8 @@ class Helper {
   inGameplay = false;
   song: SongState | null = null;
   message = '';
+  /** How the message reads: done (green), warn (amber) or error (red). */
+  messageKind: 'done' | 'warn' | 'error' = 'error';
   /** The in-game part in each theme it can go into that is in the Themes folder: absent, installed, or installed but older than this page's. */
   games: GameInTheme[] = [];
   /** Why no theme it can go into was found, or null (also null before looking). */
@@ -210,6 +212,7 @@ class Helper {
       return; // cancelled
     }
     if (!(await hasChild(dir, 'Songs')) && !(await hasChild(dir, 'Save'))) {
+      this.messageKind = 'warn';
       this.message = `“${dir.name}” has no Songs or Save folder: choose the folder Etterna is installed in (where Etterna.exe is).`;
       return this.render();
     }
@@ -228,6 +231,7 @@ class Helper {
     } catch {
       return;
     }
+    this.messageKind = 'warn';
     this.message = path && dir.name.toLowerCase() !== baseOf(path).toLowerCase() ? `Added “${dir.name}” for ${path}; its name differs, so check it is the right folder.` : '';
     this.folders.extra = this.folders.extra.filter((f) => f.path !== (path ?? dir.name));
     this.folders.extra.push({ path: path ?? dir.name, handle: dir });
@@ -350,7 +354,9 @@ class Helper {
         const choice = s.rec.choices[(req.choice ?? 1) - 1];
         if (!choice) return await this.answer({ id, status: 'error', message: 'no such choice' });
         await this.apply(choice);
-        if (!s.applied?.files.length) return await this.answer({ id, status: 'error', message: this.message || 'the offset in the file changed: press Sync again' });
+        if (!s.applied) return await this.answer({ id, status: 'error', message: this.message || 'could not save' });
+        // Nothing written because the file changed since Sync: a warning (amber in game), not a failure.
+        if (!s.applied.files.length) return await this.answer({ id, status: 'error', warn: 1, message: 'the offset in the file changed: press Sync again' });
         return await this.answer({ id, status: 'applied', offset: choice.offset.toFixed(6), map: s.after ? await this.writeMap(s.after, id) : undefined });
       }
       await this.undo();
@@ -492,8 +498,10 @@ class Helper {
           dllNote = ` The measuring library (OffsetHelper/${DLL_NAME}) could not be written (${why}). If Etterna is running, close it and press Update; otherwise use the zip below.`;
         }
       }
+      this.messageKind = dllNote ? 'warn' : 'done';
       this.message = `Installed into Themes/${g.folder}. Restart Etterna to see the Offset line ${g.theme.where} on song select; it measures in game, no browser needed.${dllNote}`;
     } catch (e) {
+      this.messageKind = 'error';
       this.message = `Could not install: ${(e as Error).message}`;
     }
     await this.checkGame();
@@ -518,8 +526,10 @@ class Helper {
           () => true,
           (e: DOMException) => e.name === 'NotFoundError',
         ));
+      this.messageKind = dllGone ? 'done' : 'warn';
       this.message = `Removed from Themes/${g.folder}. Restart Etterna for it to go.${dllGone ? '' : ` OffsetHelper/${DLL_NAME} is still there (Etterna has it open): close Etterna and press Uninstall again, or delete it by hand.`}`;
     } catch (e) {
+      this.messageKind = 'error';
       this.message = `Could not uninstall: ${(e as Error).message}`;
     }
     await this.checkGame();
@@ -561,6 +571,7 @@ class Helper {
         s.after = 'error' in after ? undefined : after;
       }
     } catch (e) {
+      this.messageKind = 'error';
       this.message = `Could not save: ${(e as Error).message}`;
     }
     s.busy = false;
@@ -577,6 +588,7 @@ class Helper {
       s.after = undefined;
       s.restored = true;
     } catch (e) {
+      this.messageKind = 'error';
       this.message = `Could not restore: ${(e as Error).message}`;
     }
     s.busy = false;
@@ -592,7 +604,7 @@ class Helper {
     document.title = tag && s?.title ? `${tag} · ${s.title} — Etterna offset helper` : 'Etterna offset helper';
     const parts: (HTMLElement | null)[] = [
       h('header', {}, h('h1', {}, 'Etterna offset helper'), this.watchLine()),
-      this.message ? h('p', { class: 'notice' }, this.message) : null,
+      this.message ? h('p', { class: this.messageKind }, this.message) : null,
       this.foldersCard(),
       this.gameCard(),
       this.songCard(),
@@ -844,7 +856,7 @@ class Helper {
       a
         ? h(
             'p',
-            { class: 'done' },
+            { class: a.files.length ? 'done' : 'warn' },
             a.files.length ? `Saved ${seconds(a.offset)} to ${a.files.join(', ')}. In Etterna, on song select with this song selected, press Ctrl+Shift+R to reload it.` : 'Nothing saved: the simfiles’ offset changed since it was measured. Play the song again to measure it anew.',
             a.skipped.length && a.files.length ? ` Left alone (different offset): ${a.skipped.join(', ')}.` : '',
             a.kept ? ` ${a.kept} chart offset${a.kept === 1 ? '' : 's'} kept (different from the song’s).` : '',

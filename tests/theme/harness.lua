@@ -179,6 +179,7 @@ check("no answer yet", text("Info") == "measuring...")
 now = now + 7
 tick(10)
 check("no answer: tells to open the page", string.find(text("Info"), "No answer", 1, true) == 1, text("Info"))
+check("no answer: a failure, in red", line:GetChild("Info").color == "#e06c6c", line:GetChild("Info").color)
 
 answer("id=old\nstatus=ready\nchoice1=1 +1\n")
 click("Sync")
@@ -310,6 +311,7 @@ click("B1")
 files[SM] = string.gsub(ORIGINAL, "%-0%.453", "-0.4")
 click("B1")
 check("undo: an offset changed since is left alone", files[SM] == string.gsub(ORIGINAL, "%-0%.453", "-0.4") and string.find(text("Info"), "changed", 1, true) ~= nil and files["/OffsetHelper/synced.txt"] == "", text("Info"))
+check("undo: amber, not red", line:GetChild("Info").color == "#d9a64a", line:GetChild("Info").color)
 files[SM] = ORIGINAL
 click("Sync")
 click("B1")
@@ -317,6 +319,7 @@ files[SM] = string.gsub(ORIGINAL, "%-0%.453", "-0.4")
 restart()
 click("B1")
 check("remembered: an offset changed since is left alone", files[SM] == string.gsub(ORIGINAL, "%-0%.453", "-0.4") and string.find(text("Info"), "changed", 1, true) ~= nil and files["/OffsetHelper/synced.txt"] == "", text("Info"))
+check("remembered: amber, not red", line:GetChild("Info").color == "#d9a64a", line:GetChild("Info").color)
 files[SM] = ORIGINAL
 click("Sync")
 click("B1")
@@ -329,6 +332,7 @@ click("Sync")
 files[SM] = string.gsub(ORIGINAL, "%-0%.453", "-0.5")
 click("B1")
 check("dll: a file changed meanwhile is left alone", files[SM] == string.gsub(ORIGINAL, "%-0%.453", "-0.5") and string.find(text("Info"), "changed", 1, true) ~= nil, text("Info"))
+check("dll: that is a warning (amber), not a failure (red)", line:GetChild("Info").color == "#d9a64a", line:GetChild("Info").color)
 
 -- Leaving song select for gameplay and coming back: the DLL stays loaded and each decoded song is
 -- freed exactly once, when another is measured or selected (freeing it after the DLL was unloaded
