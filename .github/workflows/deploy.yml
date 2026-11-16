@@ -1,9 +1,11 @@
-# Builds the site and publishes it to GitHub Pages on every push to main.
+# Builds the site and publishes it to GitHub Pages on every push to main, with the test version
+# from the fallback-overlay branch (the in-game part installed for every theme) at /fallback/.
+# This file is the same on both branches, so a push to either one publishes both.
 name: Deploy to GitHub Pages
 
 on:
   push:
-    branches: [main]
+    branches: [main, fallback-overlay]
   workflow_dispatch:
 
 permissions:
@@ -20,6 +22,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: main
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -27,6 +31,14 @@ jobs:
       - run: npm ci
       - run: npm test
       - run: npm run build
+      - name: Build the fallback-overlay branch into /fallback/
+        run: |
+          if git ls-remote --exit-code --heads origin fallback-overlay; then
+            git fetch --depth=1 origin fallback-overlay
+            git worktree add ../fallback FETCH_HEAD
+            (cd ../fallback && npm ci && npm test && npm run build)
+            cp -r ../fallback/dist dist/fallback
+          fi
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
