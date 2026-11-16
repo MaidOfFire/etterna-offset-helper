@@ -4,25 +4,25 @@ Measures how far a song's `#OFFSET` is off and fixes it, right in Etterna's song
 
 **https://maidoffire.github.io/etterna-offset-helper/**
 
-## In game (Til' Death or Rebirth, Windows)
+## In game (any theme, Windows)
 
-The helper adds an Offset line to song select (above the banner in Til' Death, in the header in Rebirth). **Sync** measures the selected song, and **Apply** writes the fix and reloads the song. **Undo** puts the old offset back, even after you select another song or restart Etterna. Hover over the result to see the sync map. No browser is needed while you play.
+The helper adds an Offset line to song select in every theme: above the banner in Til' Death, in the header in Rebirth, bottom left in others. Drag the word **Offset:** to move the line, and right-click it to put it back. **Sync** measures the selected song, and **Apply** writes the fix and reloads the song. **Undo** puts the old offset back, even after you select another song or restart Etterna. Hover over the result to see the sync map. No browser is needed while you play.
 
 ### Install with Chrome or Edge
 
 1. Close Etterna.
 2. Open the [helper page](https://maidoffire.github.io/etterna-offset-helper/).
 3. Choose your Etterna folder (the one with `Songs` and `Themes`) and allow editing.
-4. Click **Install into Til' Death** or **Install into Rebirth**. The original theme file is backed up, and **Uninstall** restores it.
+4. Click **Install**. It adds an overlay screen to `Themes/_fallback`, which every theme falls back to. **Uninstall** takes it out again and leaves everything else as it was.
 5. Start Etterna.
 
-When the page shows **Update**, click it to get the latest version.
+When the page shows **Update**, click it to get the latest version. An Etterna update replaces `_fallback`, so install again after one.
 
 ### Install by hand (Firefox, Zen or any other browser)
 
 1. Download [etterna-offset-helper-ingame.zip](https://maidoffire.github.io/etterna-offset-helper/etterna-offset-helper-ingame.zip).
 2. Extract it into the Etterna folder.
-3. Copy `offsethelper.lua` into your theme and add one line, as `INSTALL.txt` describes.
+3. Edit `Themes/_fallback/metrics.ini` as `INSTALL.txt` describes.
 
 ## Browser only (any theme)
 
