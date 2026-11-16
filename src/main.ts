@@ -735,6 +735,14 @@ class Helper {
     document.title = tag && s?.title ? `${tag} · ${s.title} — Etterna offset helper` : 'Etterna offset helper';
     const parts: (HTMLElement | null)[] = [
       h('header', {}, h('h1', {}, 'Etterna offset helper'), this.watchLine()),
+      // The fallback-overlay branch, published at /fallback/ next to the usual page.
+      h(
+        'p',
+        { class: 'warn' },
+        'Test version: Install puts the in-game part into every theme (an overlay screen in Themes/_fallback). Use it on an Etterna folder without the usual Til’ Death or Rebirth install, or press Update here to switch one over. The usual page: ',
+        h('a', { href: '../' }, 'maidoffire.github.io/etterna-offset-helper'),
+        '.',
+      ),
       this.message ? h('p', { class: this.messageKind }, this.message) : null,
       this.foldersCard(),
       this.gameCard(),
