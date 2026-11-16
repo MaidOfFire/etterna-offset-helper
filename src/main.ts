@@ -44,6 +44,7 @@ interface SongState {
 
 const baseOf = (path: string) => path.split(/[\\/]/).filter(Boolean).pop() ?? path;
 const ms = (v: number, digits = 1) => `${v >= 0 ? '+' : '−'}${Math.abs(v).toFixed(digits)} ms`;
+const megabytes = (bytes: number) => `${(bytes / 1e6).toFixed(bytes < 1e7 ? 1 : 0)} MB`;
 const seconds = (v: number) => (v < 0 ? '−' : '') + Math.abs(v).toFixed(6);
 
 async function readBytes(dir: FileSystemDirectoryHandle, name: string): Promise<Uint8Array> {
@@ -114,6 +115,8 @@ class Helper {
   games: GameInTheme[] = [];
   /** Why no theme it can go into was found, or null (also null before looking). */
   gameNote: string | null = null;
+  /** Sync map images in OffsetHelper that can go: all but the newest of each kind (page PNG, DLL BMP). */
+  oldMaps: { names: string[]; bytes: number } = { names: [], bytes: 0 };
   /** What the in-game part found out about Etterna's Lua (OffsetHelper/probe.txt), and when. */
   probe: { fields: Record<string, string>; at: number } | null = null;
   private readonly worker = new Worker(new URL('./watchWorker.ts', import.meta.url), { type: 'module' });
@@ -121,6 +124,15 @@ class Helper {
   private lastRequest = '';
 
   constructor(private readonly root: HTMLElement) {
+    // The game writes map images while the page sits in the background: count them again on return.
+    window.addEventListener('focus', () => {
+      if (!this.granted || !this.folders.install) return;
+      void this.findOldMaps().then((m) => {
+        if (m.names.length === this.oldMaps.names.length && m.bytes === this.oldMaps.bytes) return;
+        this.oldMaps = m;
+        this.render();
+      }, () => undefined);
+    });
     this.worker.onmessage = (e: MessageEvent<{ text?: string; error?: string; request?: string }>) => {
       if (e.data.request !== undefined) {
         void this.onRequest(e.data.request);
@@ -432,6 +444,7 @@ class Helper {
   }
 
   private async checkGame(): Promise<void> {
+    this.oldMaps = await this.findOldMaps().catch(() => ({ names: [], bytes: 0 }));
     try {
       const probe = await findChild(await this.gameDir(), 'probe.txt', 'file');
       const file = probe && (await probe.getFile());
@@ -457,6 +470,41 @@ class Helper {
       this.games = [];
       this.gameNote = (e as Error).message;
     }
+  }
+
+  /**
+   * The sync maps are only pictures for the hover over the banner, written anew for each Sync (under a new
+   * name, as Etterna caches images by path). Once shown, Etterna keeps the image in memory, so old files can
+   * go any time; the newest of each kind stays, in case the game has yet to load it.
+   */
+  private async findOldMaps(): Promise<{ names: string[]; bytes: number }> {
+    const dir = await this.gameDir();
+    const kinds: Record<string, { name: string; size: number; at: number }[]> = {};
+    for await (const [name, handle] of dir.entries()) {
+      const m = handle.kind === 'file' ? /^map-(native-)?\d+\.(png|bmp)$/.exec(name) : null;
+      if (!m) continue;
+      const kind = m[1] ? 'native' : 'page';
+      const file = await (handle as FileSystemFileHandle).getFile();
+      (kinds[kind] ??= []).push({ name, size: file.size, at: file.lastModified });
+    }
+    const old = Object.values(kinds).flatMap((files) => files.sort((a, b) => b.at - a.at).slice(1));
+    return { names: old.map((f) => f.name), bytes: old.reduce((n, f) => n + f.size, 0) };
+  }
+
+  async deleteOldMaps(): Promise<void> {
+    try {
+      const { names, bytes } = await this.findOldMaps();
+      const dir = await this.gameDir();
+      for (const name of names) await dir.removeEntry(name).catch(() => undefined);
+      this.oldMaps = await this.findOldMaps();
+      this.messageKind = 'done';
+      const deleted = names.length - this.oldMaps.names.length;
+      this.message = `Deleted ${deleted} old sync map image${deleted === 1 ? '' : 's'} (${megabytes(bytes - this.oldMaps.bytes)}) from OffsetHelper.`;
+    } catch (e) {
+      this.messageKind = 'error';
+      this.message = `Could not delete the old map images: ${(e as Error).message}`;
+    }
+    this.render();
   }
 
   /** Puts offsethelper.lua into a theme and loads it from its song select (the original file is kept in OffsetHelper/backup). */
@@ -759,6 +807,14 @@ class Helper {
       h('p', { class: 'hint' }, what),
       this.gameNote ? h('p', { class: 'warn' }, `Cannot install: ${this.gameNote}.`) : null,
       ...this.games.map(row),
+      this.oldMaps.names.length
+        ? h(
+            'div',
+            { class: 'theme-row' },
+            h('p', {}, `Old sync map images in OffsetHelper: ${this.oldMaps.names.length}, ${megabytes(this.oldMaps.bytes)}. They are only the pictures shown on hover, so deleting them is safe; the newest stays.`),
+            h('div', { class: 'actions' }, button('Delete old map images', () => void this.deleteOldMaps())),
+          )
+        : null,
       this.probeLine(),
     );
   }
