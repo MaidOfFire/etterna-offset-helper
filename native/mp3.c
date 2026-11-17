@@ -68,7 +68,7 @@ static int first_frame(const unsigned char *b, int size, int *pos, int *bytes, i
 const char *oh_decode_mp3(const unsigned char *data, int size, Buffer *out, int *rate) {
   int pos, bytes, spf;
   HeaderTag tag;
-  if (!first_frame(data, size, &pos, &bytes, &spf, &tag)) return "not an MP3 or OGG file";
+  if (!first_frame(data, size, &pos, &bytes, &spf, &tag)) return "not an MP3, OGG or WAV file";
   if (tag != TAG_NONE) {
     if (tag == TAG_INFO)
       for (int i = 0; i < spf; ++i)

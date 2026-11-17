@@ -44,4 +44,4 @@ npm test
 sh native/build.sh   # the in-game DLL (needs mingw-w64)
 ```
 
-The DLL decodes MP3 with [minimp3](https://github.com/lieff/minimp3) and OGG with [stb_vorbis](https://github.com/nothings/stb). Both are public domain.
+The DLL decodes MP3 with [minimp3](https://github.com/lieff/minimp3) and OGG with [stb_vorbis](https://github.com/nothings/stb), both public domain, and WAV with its own code. It reads each format the way Etterna plays it.

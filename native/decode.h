@@ -1,4 +1,4 @@
-/* Decoding a song as Etterna plays it (mp3.c, ogg.c): mono samples at the file's rate. */
+/* Decoding a song as Etterna plays it (mp3.c, ogg.c, wav.c): mono samples at the file's rate. */
 #ifndef OH_DECODE_H
 #define OH_DECODE_H
 
@@ -11,5 +11,6 @@ int oh_push(Buffer *b, float v);
 /* NULL when it worked, else why not. */
 const char *oh_decode_mp3(const unsigned char *data, int size, Buffer *out, int *rate);
 const char *oh_decode_ogg(const unsigned char *data, int size, Buffer *out, int *rate);
+const char *oh_decode_wav(const unsigned char *data, int size, Buffer *out, int *rate);
 
 #endif

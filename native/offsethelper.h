@@ -12,7 +12,7 @@
 
 typedef struct OhSong OhSong;
 
-/* Decodes MP3 or OGG Vorbis bytes on Etterna's timeline (an MP3's lead-in and "Info" frame
+/* Decodes MP3, OGG Vorbis or WAV bytes on Etterna's timeline (an MP3's lead-in and "Info" frame
  * included) and computes the onset curve. Never NULL: check oh_error. */
 OH_API OhSong *oh_decode(const unsigned char *data, int size);
 /* The same from a file (a UTF-8 path; Etterna's Lua cannot pass binary data). Its error starts

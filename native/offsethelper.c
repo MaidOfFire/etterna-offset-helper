@@ -474,8 +474,8 @@ OhSong *oh_decode(const unsigned char *data, int size) {
   OhSong *s = (OhSong *)calloc(1, sizeof(OhSong));
   if (!s) return NULL;
   Buffer out = {0};
-  int ogg = size >= 4 && !memcmp(data, "OggS", 4);
-  s->error = ogg ? oh_decode_ogg(data, size, &out, &s->rate) : oh_decode_mp3(data, size, &out, &s->rate);
+  int ogg = size >= 4 && !memcmp(data, "OggS", 4), wav = size >= 4 && !memcmp(data, "RIFF", 4);
+  s->error = ogg ? oh_decode_ogg(data, size, &out, &s->rate) : wav ? oh_decode_wav(data, size, &out, &s->rate) : oh_decode_mp3(data, size, &out, &s->rate);
   s->samples = out.data;
   s->count = out.count;
   if (!s->error && !sharp_onsets(s)) s->error = "out of memory";
