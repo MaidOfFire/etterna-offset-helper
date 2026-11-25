@@ -81,10 +81,24 @@ const char *oh_decode_mp3(const unsigned char *data, int size, Buffer *out, int 
   mp3dec_frame_info_t info;
   *rate = 0;
   while (pos < size) {
+    memset(&info, 0, sizeof info);
     int samples = mp3dec_decode_frame(&dec, data + pos, size - pos, pcm, &info);
     if (!info.frame_bytes) break;
     pos += info.frame_bytes;
-    if (!samples) continue;
+    if (!samples) {
+      /* A frame whose data starts in earlier frames that are not there (an MP3 cut without
+       * re-encoding: its first two frames). minimp3 drops it; Etterna plays it as a frame of
+       * silence ("BASS pretends the bad frames are silent. Emulate that", RageSoundReader_MP3),
+       * and so does the browser (ffmpeg decodes what it can). minimp3 read its header (hz) and
+       * kept its state, unlike for junk or broken side information (header[0] reset), which
+       * Etterna skips too. */
+      if (info.hz && info.layer == 3 && dec.header[0]) {
+        if (!*rate) *rate = info.hz;
+        for (int i = 0; i < spf; ++i)
+          if (!oh_push(out, 0)) return "out of memory";
+      }
+      continue;
+    }
     if (!*rate) *rate = info.hz;
     for (int i = 0; i < samples; ++i) {
       float v = 0;
